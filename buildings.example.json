@@ -1,0 +1,116 @@
+{
+  "buildings": [
+    {
+      "id": "office-1",
+      "name": "First Office",
+      "timezone": "America/New_York",
+      "destination": null,
+      "entrances": 1,
+      "holiday_calendar": "US_FEDERAL",
+      "weekly_hours": {
+        "0": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "1": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "2": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "3": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "4": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "5": [],
+        "6": []
+      },
+      "date_overrides": {},
+      "custom_holidays": {},
+      "removed_holidays": [],
+      "checkin_time": "15:00",
+      "inactivity_minutes": 15,
+      "heartbeat_seconds": 60,
+      "offline_alert_after_seconds": 120,
+      "event_quiet_seconds": 30,
+      "startup_grace_seconds": 300,
+      "manual_timeout_seconds": 300,
+      "clip_chunk_seconds": 60,
+      "reminder_lookahead_days": 4,
+      "visit_end_grace_minutes": 0
+    },
+    {
+      "id": "office-2",
+      "name": "Second Office Example",
+      "timezone": "America/Chicago",
+      "destination": null,
+      "holiday_calendar": "CUSTOM",
+      "custom_holidays": {
+        "2026-12-24": "Office closure"
+      },
+      "date_overrides": {
+        "2026-12-23": [
+          [
+            "09:00",
+            "13:00"
+          ]
+        ]
+      },
+      "weekly_hours": {
+        "0": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "1": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "2": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "3": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "4": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "5": [],
+        "6": []
+      },
+      "startup_grace_seconds": 300,
+      "manual_timeout_seconds": 300,
+      "clip_chunk_seconds": 60,
+      "reminder_lookahead_days": 4,
+      "visit_end_grace_minutes": 0
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+# Private runtime data and generated practice results
+.local/
+private/
+credentials/
+secrets/
+recordings/
+media/
+.env
+.env.*
+whapi.json
+operators.json
+buildings.json
+*.private.*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.sqlite-*
+*.db
+*.db-*
+*.lock
+*.log
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.zip
+*.jsonl
+!demo.jsonl
+demo-alerts.json
+# Python and macOS generated files
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store

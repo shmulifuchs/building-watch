@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Simple Terminal commands for Building Watch; no third-party packages required."""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from collections import Counter
+from pathlib import Path
+
+from buildingwatch.config import validate
+
+
+ROOT = Path(__file__).resolve().parent
+LOCAL = ROOT / '.local'
+EXAMPLE = ROOT / 'buildings.pilot.example.json'
+
+
+def read_config(path):
+    raw = json.loads(path.read_text())
+    if not isinstance(raw, dict) or set(raw) != {'buildings'} or not isinstance(raw['buildings'], list):
+        raise ValueError('Configuration must contain only a buildings list')
+    validate(raw['buildings'])
+    return raw
+
+
+def run(*args, capture=False):
+    return subprocess.run([sys.executable, str(ROOT / 'building_watch.py'), *map(str, args)],
+                          cwd=ROOT, check=True, text=True, capture_output=capture)
+
+
+def local_directory():
+    LOCAL.mkdir(mode=0o700, exist_ok=True)
+    return LOCAL
+
+
+def check():
+    path = LOCAL / 'buildings.json'
+    path = path if path.exists() else EXAMPLE
+    buildings = validate(read_config(path)['buildings'])
+    print('Building Watch configuration is valid.')
+    print('Settings:', path)
+    for building in buildings.values():
+        mode = 'local only' if building.destination is None else 'WhatsApp route configured'
+        print('  {} | {} | {}'.format(building.name, building.c['timezone'], mode))
+    print('Camera integration: awaiting hardware and a camera connector.')
+    print('Automatic recording and video extraction: still to be implemented.')
+    print('Live WhatsApp testing and continuous operation: still to be completed.')
+
+
+def demo():
+    folder = Path(tempfile.mkdtemp(prefix='practice-', dir=local_directory()))
+    raw = read_config(EXAMPLE)
+    # This practice run always uses local routes, even if someone edits the template.
+    for building in raw['buildings']:
+        building['destination'] = None
+    config = folder / 'buildings.json'
+    config.write_text(json.dumps(raw, indent=2) + '\n')
+    database = folder / 'practice.sqlite3'
+    base = ['--config', config, '--db', database]
+    result = run(*base, 'replay', ROOT / 'demo.jsonl', '--until',
+                 '2026-11-10T15:00:00-05:00', capture=True)
+    alerts = json.loads(result.stdout)
+    jobs = json.loads(run(*base, 'media-jobs', capture=True).stdout)
+    audit = json.loads(run(*base, 'audit', capture=True).stdout)
+    (folder / 'alerts.json').write_text(json.dumps(alerts, indent=2) + '\n')
+    (folder / 'media-jobs.json').write_text(json.dumps(jobs, indent=2) + '\n')
+    (folder / 'audit.json').write_text(json.dumps(audit, indent=2) + '\n')
+    kinds = Counter(alert['type'] for alert in alerts)
+    clips = [job for job in jobs if job['type'] == 'suspicious_activity']
+    checks = {
+        'First person detected': kinds['first_arrival'] == 1,
+        'Possible last departure after inactivity': kinds['possible_last_departure'] == 1,
+        'Camera outage and recovery': kinds['camera_offline'] > 0 and kinds['camera_recovered'] > 0,
+        'Suspicious event opened and closed': kinds['suspicious_activity_started'] == 1
+            and kinds['suspicious_activity_finished'] == 1,
+        'Full 486-second event preserved in consecutive clip requests': bool(clips)
+            and sum(job['duration_seconds'] for job in clips) == 486
+            and all(0 < job['duration_seconds'] <= 60 for job in clips)
+            and all(a['end'] == b['start'] for a, b in zip(clips, clips[1:]))
+            and [job['part'] for job in clips] == list(range(1, len(clips) + 1))
+            and clips[-1]['final_part'],
+        'Conflicting event ID recorded': any(row['kind'] == 'id_collision' for row in audit),
+        'Malformed input recorded without stopping': any(row['kind'] == 'quarantine_invalid_line'
+                                                         for row in audit),
+        'All alerts kept local': bool(alerts) and all(alert['delivery_status'] == 'local_only'
+                                                   for alert in alerts),
+    }
+    print('Building Watch practice run — simulated events, no camera required.\n')
+    for name, passed in checks.items():
+        print('{}  {}'.format('PASS' if passed else 'FAIL', name))
+    print('\nResults:', folder)
+    print('Video files are not created yet; these are recording requests.')
+    if not all(checks.values()):
+        raise ValueError('One or more practice checks failed; inspect the saved results')
+
+
+def start():
+    folder = local_directory()
+    config = folder / 'buildings.json'
+    if not config.exists():
+        # Exclusive creation preserves any existing local setup.
+        with config.open('x') as stream:
+            stream.write(EXAMPLE.read_text())
+        config.chmod(0o600)
+    read_config(config)
+    spool = folder / 'camera-events.jsonl'
+    spool.touch(exist_ok=True)
+    print('Starting the local timer and event service. Press Control-C to stop.', flush=True)
+    print('Camera connector not installed; no real footage is being monitored yet.', flush=True)
+    print('Settings: ' + str(config), flush=True)
+    args = [sys.executable, str(ROOT / 'building_watch.py'), '--config', str(config),
+            '--db', str(folder / 'watch.sqlite3'), 'serve', '--input', str(spool)]
+    os.execv(sys.executable, args)
+
+
+def inspect(command):
+    database = LOCAL / 'watch.sqlite3'
+    if not database.exists():
+        print('The local service has not been started. Try ./watch demo first.')
+        return
+    run('--config', LOCAL / 'buildings.json', '--db', database, command)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=['check', 'test', 'demo', 'start', 'status', 'media', 'audit'],
+                        nargs='?', default='check')
+    args = parser.parse_args()
+    try:
+        if args.command == 'test':
+            return subprocess.call([sys.executable, '-m', 'unittest', '-v'], cwd=ROOT)
+        if args.command == 'check':
+            check()
+        elif args.command == 'demo':
+            demo()
+        elif args.command == 'start':
+            start()
+        else:
+            inspect({'status': 'outbox', 'media': 'media-jobs', 'audit': 'audit'}[args.command])
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print('Building Watch: ' + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
