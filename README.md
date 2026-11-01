@@ -22,6 +22,24 @@ The pilot template, `buildings.pilot.example.json`, contains one entrance in New
 
 The first start copies the template to `.local/buildings.json` without replacing existing settings. The event spool and monitoring database also stay in `.local/`, separate from practice runs. Press Control-C to stop. Use `./watch status`, `./watch media`, or `./watch audit` in another Terminal to inspect the local service. Until a real camera connector is installed, the service has no camera input and will report that the camera has never connected after the startup grace period.
 
+## Private dashboard
+
+Open [Building Watch](https://building-watch-status.horizon-hmc-1229.chatgpt.site) on your phone or Mac and sign in with the owning ChatGPT account. The app shows camera health, service health, the latest alerts and footage requests, and setup progress. Explore demo is explicitly simulated and does not change live records.
+
+The dashboard source is backed up in `dashboard/`. It has its own Node.js dependencies for website development; the Python monitoring service still uses the standard library only. The deployed Site has its own source repository; `dashboard/` is the matching source backup in this GitHub repository. Start any future web edits from the active Site checkout and use the Sites publishing workflow, then refresh this backup.
+
+The Mac publishes a read-only status snapshot every 15 seconds while this command is running:
+
+```sh
+./watch publish
+```
+
+For a single update, use `./watch publish --once`. Its private connection lives in ignored `.local/dashboard.json`; it is excluded from GitHub. Camera footage, WhatsApp group IDs, provider IDs, operator credentials, and local media paths are excluded from snapshots. Keep the Site owner-private.
+
+Status publication and monitoring are separate processes. Starting the publisher does not start the camera connector or the monitoring service. To run the existing local timer/event service, use `./watch start` in another Terminal. No camera connector is installed yet. Current access is a responsive website; remote video playback and automatic recording/extraction remain unfinished.
+
+If the publisher stops or the Mac sleeps or disconnects, the dashboard marks its last update as stale after 60 seconds. This is a visible freshness warning, not an external outage notification service. Continuous process supervision and remote outage alerts remain deployment work.
+
 ## GitHub backup
 
 The source code is kept in Git. `.gitignore` excludes local settings, credentials, monitoring databases, event spools, practice results, and video files. Store all future runtime settings and secrets in `.local/` or outside this project. Source backup does not include footage or monitoring history.

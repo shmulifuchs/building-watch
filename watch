@@ -125,8 +125,9 @@ def inspect(command):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['check', 'test', 'demo', 'start', 'status', 'media', 'audit'],
+    parser.add_argument('command', choices=['check', 'test', 'demo', 'start', 'status', 'media', 'audit', 'publish'],
                         nargs='?', default='check')
+    parser.add_argument('--once', action='store_true', help='Publish one dashboard update and exit')
     args = parser.parse_args()
     try:
         if args.command == 'test':
@@ -137,6 +138,11 @@ def main():
             demo()
         elif args.command == 'start':
             start()
+        elif args.command == 'publish':
+            command = [sys.executable, str(ROOT / 'dashboard_sync.py')]
+            if args.once:
+                command.append('--once')
+            return subprocess.call(command, cwd=ROOT)
         else:
             inspect({'status': 'outbox', 'media': 'media-jobs', 'audit': 'audit'}[args.command])
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

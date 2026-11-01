@@ -1,0 +1,241 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-11-03T01:08:03+00:00",
+  "buildings": [
+    {
+      "id": "office-1",
+      "name": "First Office",
+      "timezone": "America/New_York",
+      "weekly_hours": {
+        "0": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "1": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "2": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "3": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "4": [
+          [
+            "09:00",
+            "17:00"
+          ]
+        ],
+        "5": [],
+        "6": []
+      },
+      "hours_today": [
+        [
+          "09:00",
+          "17:00"
+        ]
+      ],
+      "open_now": false,
+      "destination_configured": false,
+      "heartbeat_seconds": 60,
+      "offline_after_seconds": 120,
+      "last_heartbeat": "2026-11-03T01:08:00+00:00",
+      "service_updated_at": "2026-11-03T01:08:03+00:00",
+      "disconnected": false,
+      "occupancy": "person_detected",
+      "suspicious_active": false,
+      "alerts": [
+        {
+          "id": 8,
+          "type": "suspicious_activity_finished",
+          "created_at": "2026-11-03T01:08:00+00:00",
+          "text": "First Office: Flagged event closed (explicit_end); requested footage is split into 9 numbered parts.",
+          "delivery_status": "local_only"
+        },
+        {
+          "id": 7,
+          "type": "suspicious_activity_started",
+          "created_at": "2026-11-03T01:00:00+00:00",
+          "text": "First Office: Explicitly flagged entrance activity. Recording requested for the full event in numbered parts.",
+          "delivery_status": "local_only"
+        },
+        {
+          "id": 6,
+          "type": "camera_recovered",
+          "created_at": "2026-11-03T01:00:00+00:00",
+          "text": "First Office: Camera connected; usable frames are being reported.",
+          "delivery_status": "local_only"
+        },
+        {
+          "id": 5,
+          "type": "camera_offline",
+          "created_at": "2026-11-03T00:59:59.999999+00:00",
+          "text": "First Office: Previously connected camera is not responding. Occupancy cannot be verified.",
+          "delivery_status": "local_only"
+        },
+        {
+          "id": 4,
+          "type": "possible_last_departure",
+          "created_at": "2026-11-02T22:15:00.999999+00:00",
+          "text": "First Office: Possible last departure after 15 minutes without detected person activity. Occupancy is unconfirmed.",
+          "delivery_status": "local_only"
+        },
+        {
+          "id": 3,
+          "type": "camera_recovered",
+          "created_at": "2026-11-02T22:00:00+00:00",
+          "text": "First Office: Camera connected; usable frames are being reported.",
+          "delivery_status": "local_only"
+        },
+        {
+          "id": 2,
+          "type": "camera_offline",
+          "created_at": "2026-11-02T21:59:59.999999+00:00",
+          "text": "First Office: Previously connected camera is not responding. Occupancy cannot be verified.",
+          "delivery_status": "local_only"
+        },
+        {
+          "id": 1,
+          "type": "first_arrival",
+          "created_at": "2026-11-02T14:00:01+00:00",
+          "text": "First Office: First entry detected today.",
+          "delivery_status": "local_only"
+        }
+      ],
+      "recordings": [
+        {
+          "id": 11,
+          "type": "suspicious_activity",
+          "start": "2026-11-03T01:07:57+00:00",
+          "end": "2026-11-03T01:08:03+00:00",
+          "duration_seconds": 6.0,
+          "part": 9,
+          "final_part": true,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        },
+        {
+          "id": 10,
+          "type": "suspicious_activity",
+          "start": "2026-11-03T01:06:57+00:00",
+          "end": "2026-11-03T01:07:57+00:00",
+          "duration_seconds": 60.0,
+          "part": 8,
+          "final_part": false,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        },
+        {
+          "id": 9,
+          "type": "suspicious_activity",
+          "start": "2026-11-03T01:05:57+00:00",
+          "end": "2026-11-03T01:06:57+00:00",
+          "duration_seconds": 60.0,
+          "part": 7,
+          "final_part": false,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        },
+        {
+          "id": 8,
+          "type": "suspicious_activity",
+          "start": "2026-11-03T01:04:57+00:00",
+          "end": "2026-11-03T01:05:57+00:00",
+          "duration_seconds": 60.0,
+          "part": 6,
+          "final_part": false,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        },
+        {
+          "id": 7,
+          "type": "suspicious_activity",
+          "start": "2026-11-03T01:03:57+00:00",
+          "end": "2026-11-03T01:04:57+00:00",
+          "duration_seconds": 60.0,
+          "part": 5,
+          "final_part": false,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        },
+        {
+          "id": 6,
+          "type": "suspicious_activity",
+          "start": "2026-11-03T01:02:57+00:00",
+          "end": "2026-11-03T01:03:57+00:00",
+          "duration_seconds": 60.0,
+          "part": 4,
+          "final_part": false,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        },
+        {
+          "id": 5,
+          "type": "suspicious_activity",
+          "start": "2026-11-03T01:01:57+00:00",
+          "end": "2026-11-03T01:02:57+00:00",
+          "duration_seconds": 60.0,
+          "part": 3,
+          "final_part": false,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        },
+        {
+          "id": 4,
+          "type": "suspicious_activity",
+          "start": "2026-11-03T01:00:57+00:00",
+          "end": "2026-11-03T01:01:57+00:00",
+          "duration_seconds": 60.0,
+          "part": 2,
+          "final_part": false,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        },
+        {
+          "id": 3,
+          "type": "suspicious_activity",
+          "start": "2026-11-03T00:59:57+00:00",
+          "end": "2026-11-03T01:00:57+00:00",
+          "duration_seconds": 60.0,
+          "part": 1,
+          "final_part": false,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        },
+        {
+          "id": 2,
+          "type": "possible_last_departure",
+          "start": "2026-11-02T21:59:57+00:00",
+          "end": "2026-11-02T22:00:07+00:00",
+          "duration_seconds": 10.0,
+          "part": null,
+          "final_part": false,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        },
+        {
+          "id": 1,
+          "type": "first_arrival",
+          "start": "2026-11-02T13:59:58+00:00",
+          "end": "2026-11-02T14:00:08+00:00",
+          "duration_seconds": 10.0,
+          "part": null,
+          "final_part": false,
+          "recording_gap_possible": false,
+          "status": "awaiting_recording"
+        }
+      ]
+    }
+  ]
+}
