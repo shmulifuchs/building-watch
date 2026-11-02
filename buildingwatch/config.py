@@ -1,6 +1,6 @@
 import re
 from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .calendar_utils import us_holidays
 
 
@@ -58,7 +58,10 @@ class Building:
         self.name = config.get('name', self.id)
         if not isinstance(self.name, str) or not self.name:
             raise ValueError('Building name must be a nonempty string')
-        self.zone = ZoneInfo(config['timezone'])
+        try:
+            self.zone = ZoneInfo(config['timezone'])
+        except ZoneInfoNotFoundError:
+            raise ValueError('Unknown timezone: ' + config['timezone']) from None
         self.destination = config['destination']
         if config.get('entrances',1) != 1:
             raise ValueError('This event schema currently supports one entrance per building')

@@ -36,6 +36,8 @@ The Mac publishes a read-only status snapshot every 15 seconds while this comman
 
 For a single update, use `./watch publish --once`. Its private connection lives in ignored `.local/dashboard.json`; it is excluded from GitHub. Camera footage, WhatsApp group IDs, provider IDs, operator credentials, and local media paths are excluded from snapshots. Keep the Site owner-private.
 
+The connection file must be configured on the Mac before publishing. It is a JSON object with `url` (the exact private Site HTTPS origin) and `token` (its Sites service credential). This repository does not create the file automatically. Obtain the credential through the supported Sites workflow, keep the file owner-readable only, and never commit or paste the credential into shared messages.
+
 Status publication and monitoring are separate processes. Starting the publisher does not start the camera connector or the monitoring service. To run the existing local timer/event service, use `./watch start` in another Terminal. No camera connector is installed yet. Current access is a responsive website; remote video playback and automatic recording/extraction remain unfinished.
 
 If the publisher stops or the Mac sleeps or disconnects, the dashboard marks its last update as stale after 60 seconds. This is a visible freshness warning, not an external outage notification service. Continuous process supervision and remote outage alerts remain deployment work.
@@ -122,6 +124,8 @@ Timers run even without camera events. Ctrl+C stops gracefully. Only one worker 
 ## Real WhatsApp delivery
 
 Copy the example to a private runtime location and set each destination to the intended WhatsApp group ID ending in `@g.us`, not the sender phone number. No real group IDs or credentials are included in these files. Run the scheduler with the private configuration, then start the independent delivery worker against the same database/configuration:
+
+To save the Whapi channel token without showing it on screen, run `python3 whatsapp_setup.py --file /path/to/private/whapi.json` and enter the token at the hidden prompt. Choose a private directory outside the project. The helper creates a new owner-only credential file and does not modify existing ignore files or directory permissions. It does not contact Whapi or verify the connection.
 
 ```sh
 python3 building_watch.py --config /path/to/private/buildings.json --db watch-v2.sqlite3 deliver --credentials /path/to/private/whapi.json

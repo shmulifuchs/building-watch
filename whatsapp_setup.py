@@ -13,10 +13,9 @@ def save_token(destination, token):
     destination = Path(destination).expanduser().absolute()
     if destination.exists():
         raise ValueError('A connection file already exists. No changes were made.')
+    # Existing directories and their ignore rules may belong to the user.
+    # Secure the credential itself; do not alter other files or permissions.
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # Protect the dedicated credentials directory and keep its contents out of Git.
-    destination.parent.chmod(0o700)
-    (destination.parent / '.gitignore').write_text('*\n')
     fd = os.open(str(destination), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, 'w') as stream:

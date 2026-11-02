@@ -6,8 +6,7 @@ import signal
 import threading
 import time
 from pathlib import Path
-from buildingwatch.calendar_utils import instant,us_holidays
-from buildingwatch.config import Building
+from buildingwatch.calendar_utils import instant
 from buildingwatch.service import Engine,Scheduler,JsonlInput,WorkerLock
 from buildingwatch.delivery import Delivery,Whapi,attach_media
 
@@ -49,12 +48,16 @@ def main():
             until = instant(args.until).timestamp()
             with open(args.events) as stream:
                 for line in stream:
+                    if stop.is_set():
+                        return 130
                     try:
                         event = json.loads(line)
                     except ValueError:
                         engine.intake.quarantine_line(until,'malformed_json')
                     else:
                         engine.ingest(event,until,replay=True)
+            if stop.is_set():
+                return 130
             engine.advance(until,flush=True)
             print(json.dumps(engine.alerts(),indent=2))
         elif args.command == 'serve':
@@ -83,4 +86,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())
