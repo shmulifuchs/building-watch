@@ -121,7 +121,7 @@ class JsonlInput:
                 else:
                     try:
                         event = json.loads(line)
-                    except (ValueError,UnicodeError):
+                    except (ValueError,UnicodeError,RecursionError):
                         self.engine.intake.quarantine_line(now,'malformed_json')
                     else:
                         self.engine.ingest(event,now)

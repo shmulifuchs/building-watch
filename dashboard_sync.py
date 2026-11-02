@@ -1,5 +1,6 @@
 """Publish status, without secrets or footage, to the owner's private dashboard."""
 import argparse
+import http.client
 import json
 import signal
 import sqlite3
@@ -29,11 +30,11 @@ def publish(payload, connection):
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=15) as response:
             result = json.load(response)
-            if result.get('ok') is not True:
+            if not isinstance(result,dict) or result.get('ok') is not True:
                 raise ValueError('Dashboard did not confirm the update')
     except urllib.error.HTTPError as error:
         raise ValueError('Dashboard update was rejected (HTTP {}). Check the private connection.'.format(error.code)) from None
-    except (urllib.error.URLError, TimeoutError):
+    except (urllib.error.URLError, TimeoutError, http.client.HTTPException, RecursionError):
         raise ValueError('Dashboard could not be reached. Its display will mark old status as stale.') from None
 
 

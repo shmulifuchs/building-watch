@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, ArrowUpRight, Building2, Camera, CameraOff, Check, ChevronRight, CircleAlert, Clock3, DoorOpen, Film, Footprints, LayoutDashboard, LockKeyhole, MessageCircle, Radio, RefreshCw, Settings2, ShieldCheck, Video, X } from "lucide-react";
+import { Activity, ArrowUpRight, Building2, Camera, Check, ChevronRight, CircleAlert, Clock3, DoorOpen, Film, Footprints, LayoutDashboard, LockKeyhole, MessageCircle, Radio, RefreshCw, Settings2, ShieldCheck, Video, X } from "lucide-react";
 import { ageSeconds, cameraState, freshness, serviceState } from "../lib/status-model.mjs";
 import { snapshotSchema } from "../lib/status-schema.mjs";
 import demoData from "./demo-data.json";
@@ -52,7 +52,7 @@ export default function Dashboard() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(0);
   const [selected, setSelected] = useState<{ alert?: Alert; recording?: Recording } | null>(null);
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -69,12 +69,12 @@ export default function Dashboard() {
     finally { setLoading(false); setRefreshing(false); setNow(Date.now()); }
   }, []);
   useEffect(() => {
-    refresh();
+    const initial = setTimeout(refresh, 0);
     const interval = setInterval(refresh, 15000);
     const tick = setInterval(() => setNow(Date.now()), 5000);
     const visible = () => { if (document.visibilityState === "visible") refresh(); };
     document.addEventListener("visibilitychange", visible);
-    return () => { clearInterval(interval); clearInterval(tick); document.removeEventListener("visibilitychange", visible); };
+    return () => { clearTimeout(initial); clearInterval(interval); clearInterval(tick); document.removeEventListener("visibilitychange", visible); };
   }, [refresh]);
   const data = isDemo ? demoData as Snapshot : snapshot;
   const effectiveNow = isDemo ? Date.parse(demoData.captured_at) : now;

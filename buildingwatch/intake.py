@@ -25,6 +25,7 @@ class Intake:
                     raise ValueError('Unsupported camera event type')
                 if not isinstance(event.get('id'),str) or not 0 < len(event['id']) <= 256:
                     raise ValueError('Event ID must be a nonempty string of at most 256 characters')
+                event['id'].encode('utf-8')
                 parsed_at = instant(event['at'])
                 if not 1900 <= parsed_at.year <= 9997:
                     raise ValueError('Event timestamp year must be between 1900 and 9997')
@@ -36,7 +37,7 @@ class Intake:
                 digest = hashlib.sha256(body.encode()).hexdigest()
             except (ValueError,TypeError,KeyError,AttributeError,OverflowError,OSError) as error:
                 building = event.get('building') if isinstance(event,dict) else None
-                building = building if isinstance(building,str) else None
+                building = building if isinstance(building,str) and building in self.buildings else None
                 self.store.audit(received_at,building,'quarantine_invalid',reason=str(error))
                 return 'invalid'
             prior = db.execute('SELECT digest FROM bw_events WHERE building=? AND id=?',
@@ -84,7 +85,7 @@ class Intake:
                     self.store.audit(cutoff,row['building'],'late_beyond_buffer',event_id=row['id'])
                     continue
                 # Advance timers to each event first, so restart catch-up respects gaps between heartbeats.
-                before = max(state.get('watermark',row['at']-0.000001),row['at']-0.000001)
+                before = math.nextafter(row['at'], float('-inf'))
                 self.rules.advance(self.buildings[row['building']],state,before)
                 self.rules.event(self.buildings[row['building']],state,event,row['at'])
                 state['watermark'] = row['at']

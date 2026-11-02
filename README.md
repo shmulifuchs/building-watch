@@ -166,3 +166,7 @@ This trusted local operation queues the file with its building route and numbere
 Use Reolink's existing iPhone/Android app for live viewing. Before deployment, finish real camera input/recording, automatic clip extraction, continuous inbound chat handling, remote health-agent authentication, service installation/supervision, failed-delivery monitoring, credential rotation and access management. Suspicious rules currently mean off-hours person activity and explicit flags, not general behavior recognition.
 
 US holidays follow nationwide dates and observed-day rules from [OPM](https://www.opm.gov/policy-data-oversight/pay-leave/federal-holidays/). Other calendars use explicit custom dates; regional Inauguration Day and ad hoc future closures are not automatically added. The initial equipment budget remains approximately $1,000; this revision made no purchases or installations.
+
+## Reviewed reliability fixes
+
+Malformed Unicode IDs and deeply nested input are quarantined. Interrupted HTTP responses no longer stop delivery or publication. Equal-timestamp events are processed before their deadline timers, and person-related suspicious flags cancel departure checks. Credential setup preserves existing ignore rules and directory permissions. Group delivery means at least one matching participant receipt from GET /statuses/{MessageID}; it does not establish delivery to every member. Live provider validation remains required.

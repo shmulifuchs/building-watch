@@ -1,4 +1,5 @@
 import base64
+import http.client
 import json
 import socket
 import urllib.error
@@ -42,7 +43,7 @@ class Whapi:
         except urllib.error.URLError as error:
             outcome = 'retryable' if isinstance(error.reason,(socket.gaierror,ConnectionRefusedError)) else 'unknown'
             raise ProviderError(outcome,'Connection failed') from None
-        except (TimeoutError,OSError,ValueError):
+        except (TimeoutError,OSError,ValueError,http.client.HTTPException,RecursionError):
             raise ProviderError('unknown','Response unavailable or invalid') from None
 
     def send(self, body):
@@ -63,6 +64,19 @@ class Whapi:
         message = result.get('message',result)
         if not isinstance(message,dict):
             raise ProviderError('unknown','Invalid status response')
+        if str(message.get('chat_id', '')).endswith('@g.us'):
+            receipts = self.request('/statuses/'+quote(message_id,safe='')).get('statuses')
+            if not isinstance(receipts,list):
+                raise ProviderError('unknown','Invalid group receipt response')
+            confirmed = any(isinstance(item,dict) and item.get('id') == message_id
+                            and item.get('recipient_id') == message['chat_id']
+                            and isinstance(item.get('viewer_id'),str) and item['viewer_id']
+                            and item.get('status') in ('delivered','read','played')
+                            for item in receipts)
+            message = dict(message,status='delivered' if confirmed else
+                           'failed' if message.get('status') == 'failed' else 'pending')
+        elif not message.get('chat_id'):
+            raise ProviderError('unknown','Status destination missing')
         return message
 
 
@@ -83,7 +97,7 @@ class Delivery:
                 result = self.provider.send(json.loads(row['body']))
                 message = result.get('message')
                 message_id = message.get('id') if isinstance(message,dict) else None
-                if result.get('sent') is not True or not message_id:
+                if result.get('sent') is not True or not isinstance(message_id,str) or not message_id:
                     raise ProviderError('unknown','Provider acceptance not confirmed')
                 self.store.db.execute("UPDATE bw_queue SET status='accepted',provider_id=?,checked=?,due=?,error=NULL WHERE id=?",(message_id,now,now,row['id']))
             except ProviderError as error:

@@ -55,7 +55,7 @@ class Rules:
             s['occupancy'] = 'unconfirmed'
             self.store.audit(at,b.id,'exit_recorded',event_id=event_id,coverage_healthy=healthy,
                              occupancy='unconfirmed')
-        if kind in ('entry','activity'):
+        if kind in ('entry','activity','suspicious_start'):
             s.pop('departure',None)
             s['occupancy'] = 'person_detected'
         if kind in ('entry','activity') and not b.open_at(utc(at)) and not self.visits.expected(b.id,at):

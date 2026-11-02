@@ -52,7 +52,7 @@ def main():
                         return 130
                     try:
                         event = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):
                         engine.intake.quarantine_line(until,'malformed_json')
                     else:
                         engine.ingest(event,until,replay=True)
