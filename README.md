@@ -65,7 +65,7 @@ python3 building_watch.py --db demo-v2.sqlite3 media-jobs
 python3 building_watch.py --db demo-v2.sqlite3 audit
 ```
 
-The sample configuration uses `destination: null` to explicitly select local-only operation. Replay makes no network calls, sorts buffered input, and advances simulated time to `--until`. The demonstration includes identical duplicates, conflicting IDs, and a malformed line; valid events continue processing. Sample results are in `demo-alerts.json`.
+The sample configuration uses `destination: null` to explicitly select local-only operation. Replay makes no network calls, sorts buffered input, and advances simulated time to `--until`. The demonstration includes identical duplicates, conflicting IDs, and a malformed line; valid events continue processing. The `./watch demo` command writes its results to a new practice directory inside `.local/`.
 
 ## Architecture
 
@@ -105,7 +105,7 @@ Append one JSON object plus a newline per event. Required fields: `id`, `buildin
 {"id":"camera-event-001","building":"office-1","type":"entry","at":"2026-11-02T09:00:01-05:00"}
 ```
 
-The spool is append-only. Byte offsets and buffered events survive restarts; partial trailing lines wait for completion. Bad/oversized lines, including timestamps that overflow during conversion, are quarantined and skipped. Truncation is logged; rotation by replacing the file is not supported. A future camera connector must supply stable IDs, usable-frame heartbeats, and calibrated directional events. RTSP person detection is not implemented here.
+The spool is append-only. Byte offsets and buffered events survive restarts; partial trailing lines wait for completion. Bad/oversized lines, including timestamps that overflow during conversion, are quarantined and skipped. Truncation is logged; rotation by replacing the file is not supported. A future camera connector must supply stable IDs, usable-frame heartbeats, and calibrated directional events. Configure it to report genuine usable-frame heartbeats at least twice within `heartbeat_seconds` (by default, one every 30 seconds or faster for a 60-second threshold), with enough extra margin for expected jitter. Coverage becomes unverified when a heartbeat is older than that threshold; the separate offline alert defaults to 120 seconds. Heartbeats must represent actual usable frames, not merely a running connector. RTSP person detection is not implemented here.
 
 Spool catch-up uses bounded reads of a fixed file prefix. Its timer horizon is saved with the offsets and timers wait until the whole prefix has been read, so older events cannot be overtaken by the clock between batches. Newly appended bytes form the next prefix. The scheduler reads successive backlog batches without the usual one-second delay; a large backlog can still delay timer alerts, and the dashboard's scheduler freshness reflects that delay. Events already older than the committed watermark are still quarantined. Event timestamps must use years 1900 through 9997, including buffered events created by older versions. If settings remove a building while it has buffered events, those events are retained in quarantine with a `building_removed` audit entry, allowing the remaining buildings to continue.
 

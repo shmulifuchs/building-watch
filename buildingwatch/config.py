@@ -22,6 +22,12 @@ def clock(value):
     return time.fromisoformat(value)
 
 
+def iso_date(value):
+    if not isinstance(value, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+        raise ValueError('Dates must use YYYY-MM-DD')
+    return date.fromisoformat(value)
+
+
 def windows(value):
     if not isinstance(value, list):
         raise ValueError('Hours must be a list of [start,end] windows')
@@ -69,7 +75,7 @@ class Building:
             if not isinstance(self.c.get(key, {}), dict):
                 raise ValueError(key + ' must be an object')
             for day, value in self.c.get(key, {}).items():
-                date.fromisoformat(day)
+                iso_date(day)
                 if key == 'date_overrides':
                     windows(value)
                 elif not isinstance(value, str) or not value:
@@ -77,7 +83,7 @@ class Building:
         if not isinstance(self.c.get('removed_holidays', []), list):
             raise ValueError('removed_holidays must be a list')
         for day in self.c.get('removed_holidays', []):
-            date.fromisoformat(day)
+            iso_date(day)
         for key, default in DEFAULTS.items():
             if isinstance(default, int):
                 value = self.c[key]

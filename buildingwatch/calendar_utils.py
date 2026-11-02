@@ -1,8 +1,14 @@
 import calendar
+import re
 from datetime import date, datetime, timezone, timedelta
 
 def instant(value):
-    result = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    value = value.replace('Z', '+00:00')
+    # Python 3.9/3.10 require exactly 3 or 6 digits. Normalize seconds
+    # to microseconds, matching the precision supported by datetime.
+    value = re.sub(r'^(\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2})\.(\d+)',
+                   lambda match: match.group(1)+'.'+match.group(2)[:6].ljust(6, '0'), value)
+    result = datetime.fromisoformat(value)
     if result.tzinfo is None:
         raise ValueError('Include a timezone offset in every timestamp')
     return result.astimezone(timezone.utc)

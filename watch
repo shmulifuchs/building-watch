@@ -118,7 +118,7 @@ def start():
 def inspect(command):
     database = LOCAL / 'watch.sqlite3'
     if not database.exists():
-        print('The local service has not been started. Try ./watch demo first.')
+        print('The local service has not been started. Use ./watch start to start it.')
         return
     run('--config', LOCAL / 'buildings.json', '--db', database, command)
 
