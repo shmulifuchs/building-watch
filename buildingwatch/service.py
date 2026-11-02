@@ -58,8 +58,10 @@ class Scheduler:
     def run(self, stop, input_source=None):
         while not stop.is_set():
             if input_source:
-                input_source.read(self.clock())
-            self.run_once()
+                # Do not move timers past events still waiting in the spool.
+                self.engine.advance(input_source.read(self.clock()))
+            else:
+                self.run_once()
             stop.wait(self.interval)
 
 
@@ -70,19 +72,34 @@ class JsonlInput:
         self.source = str(self.path.resolve())
     def read(self, now):
         if not self.path.exists():
-            return
+            return now
         row = self.engine.db.execute('SELECT position FROM bw_offsets WHERE source=?',(self.source,)).fetchone()
         position = row['position'] if row else 0
-        if self.path.stat().st_size < position:
+        size = self.path.stat().st_size
+        batch_key = 'spool-batch:'+self.source
+        row = self.engine.db.execute('SELECT value FROM bw_meta WHERE key=?',(batch_key,)).fetchone()
+        batch = json.loads(row['value']) if row else None
+        if size < position or (batch and size < batch['end']):
             self.engine.intake.quarantine_line(now,'input_file_truncated; resetting spool offset')
             position = 0
+            batch = None
+            self.engine.db.execute('DELETE FROM bw_meta WHERE key=?',('spool-skip:'+self.source,))
+        if batch is None:
+            # Capture a finite prefix, so a growing spool cannot hold timers
+            # forever. Persist its horizon across batches and worker restarts.
+            batch = dict(end=size,at=now)
+            self.engine.db.execute('INSERT OR REPLACE INTO bw_meta VALUES(?,?)',(batch_key,json.dumps(batch)))
         skip_key = 'spool-skip:'+self.source
         skipping = self.engine.db.execute('SELECT 1 FROM bw_meta WHERE key=?',(skip_key,)).fetchone() is not None
         bytes_read = 0
+        partial = False
         with self.path.open('rb') as stream:
             stream.seek(position)
             for _ in range(1000):
-                line = stream.readline(1_048_577)
+                remaining = batch['end'] - stream.tell()
+                if remaining <= 0:
+                    break
+                line = stream.readline(min(1_048_577,remaining))
                 if not line:
                     break
                 bytes_read += len(line)
@@ -96,6 +113,7 @@ class JsonlInput:
                         skipping = False
                         self.engine.db.execute('DELETE FROM bw_meta WHERE key=?',(skip_key,))
                 elif not line.endswith(b'\n'):
+                    partial = True
                     break
                 else:
                     try:
@@ -108,6 +126,9 @@ class JsonlInput:
                 self.engine.db.execute('INSERT OR REPLACE INTO bw_offsets VALUES(?,?)',(self.source,position))
                 if bytes_read >= 4_194_304:
                     break
+        if position >= batch['end'] or partial:
+            self.engine.db.execute('DELETE FROM bw_meta WHERE key=?',(batch_key,))
+        return batch['at']
 
 
 class WorkerLock:

@@ -31,7 +31,7 @@ class Intake:
                 normalized = {**event,'at':instant(event['at']).isoformat()}
                 body = json.dumps(normalized,sort_keys=True,separators=(',',':'))
                 digest = hashlib.sha256(body.encode()).hexdigest()
-            except (ValueError,TypeError,KeyError,AttributeError) as error:
+            except (ValueError,TypeError,KeyError,AttributeError,OverflowError,OSError) as error:
                 building = event.get('building') if isinstance(event,dict) else None
                 building = building if isinstance(building,str) else None
                 self.store.audit(received_at,building,'quarantine_invalid',reason=str(error))
@@ -62,6 +62,10 @@ class Intake:
         rows = self.store.db.execute("SELECT * FROM bw_events WHERE status='pending' AND at<=? ORDER BY at, CASE WHEN json_extract(body,'$.type')='heartbeat' THEN 0 ELSE 1 END, rowid",(cutoff,)).fetchall()
         for row in rows:
             with self.store.transaction():
+                if row['building'] not in self.buildings:
+                    self.store.db.execute("UPDATE bw_events SET status='quarantined' WHERE building=? AND id=?",(row['building'],row['id']))
+                    self.store.audit(cutoff,row['building'],'building_removed',event_id=row['id'])
+                    continue
                 event = json.loads(row['body'])
                 state = self.store.state(row['building'])
                 if row['at'] < state.get('watermark',float('-inf')):

@@ -105,7 +105,9 @@ Append one JSON object plus a newline per event. Required fields: `id`, `buildin
 {"id":"camera-event-001","building":"office-1","type":"entry","at":"2026-11-02T09:00:01-05:00"}
 ```
 
-The spool is append-only. Byte offsets and buffered events survive restarts; partial trailing lines wait for completion. Bad/oversized lines are quarantined and skipped. Truncation is logged; rotation by replacing the file is not supported. A future camera connector must supply stable IDs, usable-frame heartbeats, and calibrated directional events. RTSP person detection is not implemented here.
+The spool is append-only. Byte offsets and buffered events survive restarts; partial trailing lines wait for completion. Bad/oversized lines, including timestamps that overflow during conversion, are quarantined and skipped. Truncation is logged; rotation by replacing the file is not supported. A future camera connector must supply stable IDs, usable-frame heartbeats, and calibrated directional events. RTSP person detection is not implemented here.
+
+Spool catch-up uses bounded reads of a fixed file prefix. Its timer horizon is saved with the offsets and held at the time that prefix was first observed, so a large backlog cannot become late merely because it takes several reads. Newly appended bytes form the next prefix. Timers resume advancing as prefixes are consumed; a large backlog can delay timer alerts, and the dashboard's scheduler freshness reflects that delay. Events already older than the committed watermark are still quarantined. If settings remove a building while it has buffered events, those events are retained in quarantine with a `building_removed` audit entry, allowing the remaining buildings to continue.
 
 ## Autonomous scheduler
 
