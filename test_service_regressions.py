@@ -3,8 +3,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from buildingwatch.service import Engine, JsonlInput, Scheduler
+from buildingwatch.delivery import Delivery, Whapi
 from test_building_watch import config, T, timestamp
 
 
@@ -52,7 +54,7 @@ class ServiceRegressionTests(unittest.TestCase):
         self.write_burst()
         engine = Engine([config()], self.db)
         try:
-            engine.advance(JsonlInput(engine, self.spool).read(T))
+            self.assertIsNone(JsonlInput(engine, self.spool).read(T))
         finally:
             engine.close()
         engine = Engine([config()], self.db)
@@ -60,8 +62,11 @@ class ServiceRegressionTests(unittest.TestCase):
         source = JsonlInput(engine, self.spool)
         for tick in range(8):
             horizon = source.read(T+20+tick)
-            self.assertEqual(horizon, T)
-            engine.advance(horizon)
+            if tick < 7:
+                self.assertIsNone(horizon)
+            else:
+                self.assertEqual(horizon, T)
+                engine.advance(horizon)
         engine.advance(source.read(T+30))
         self.assertEqual(engine.db.execute("SELECT COUNT(*) FROM bw_events WHERE status='processed'").fetchone()[0], 8001)
         self.assertEqual(len([row for row in engine.alerts() if row['type'] == 'first_arrival']), 1)
@@ -71,7 +76,7 @@ class ServiceRegressionTests(unittest.TestCase):
         engine = Engine([config()], self.db)
         self.addCleanup(engine.close)
         source = JsonlInput(engine, self.spool)
-        engine.advance(source.read(T))
+        self.assertIsNone(source.read(T))
         with self.spool.open('a') as stream:
             stream.write(json.dumps(event('appended', at=T+1))+'\n')
         self.assertEqual(source.read(T+10), T)
@@ -111,6 +116,53 @@ class ServiceRegressionTests(unittest.TestCase):
         self.assertEqual(engine.db.execute("SELECT COUNT(*) FROM bw_audit WHERE kind='quarantine_invalid'").fetchone()[0], 2)
         self.assertEqual(engine.db.execute("SELECT status FROM bw_events WHERE id='valid'").fetchone()[0], 'processed')
         self.assertEqual(len([row for row in engine.alerts() if row['type'] == 'first_arrival']), 1)
+
+    def test_old_backlog_is_processed_as_a_whole_after_restart(self):
+        self.write_burst(1501)
+        engine = Engine([config()], self.db)
+        engine.advance(T-10, flush=True)
+        engine.close()
+        engine = Engine([config()], self.db)
+        self.addCleanup(engine.close)
+        source = JsonlInput(engine, self.spool)
+        self.assertIsNone(source.read(T+60))
+        self.assertEqual(engine.db.execute("SELECT COUNT(*) FROM bw_events WHERE status='processed'").fetchone()[0], 0)
+        engine.close()
+        engine = Engine([config()], self.db)
+        self.addCleanup(engine.close)
+        source = JsonlInput(engine, self.spool)
+        engine.advance(source.read(T+61))
+        self.assertEqual(engine.db.execute("SELECT COUNT(*) FROM bw_events WHERE status='quarantined'").fetchone()[0], 0)
+        self.assertEqual(len([row for row in engine.alerts() if row['type'] == 'first_arrival']), 1)
+
+    def test_year_one_and_old_pending_invalid_dates_are_quarantined(self):
+        engine = Engine([config()], self.db)
+        self.addCleanup(engine.close)
+        invalid = dict(event('bad'), at='0001-01-01T00:00:00+00:00')
+        self.assertEqual(engine.ingest(invalid, T), 'invalid')
+        # A previous version could have persisted this row already.
+        engine.db.execute('INSERT INTO bw_events VALUES(?,?,?,?,?,?)',
+                          ('a', 'old-bad', -62135596800, 'old', json.dumps(invalid), 'pending'))
+        engine.ingest(event('valid', 'entry'), T)
+        engine.advance(T+10)
+        self.assertEqual(engine.db.execute("SELECT status FROM bw_events WHERE id='old-bad'").fetchone()[0], 'quarantined')
+        self.assertEqual(len([row for row in engine.alerts() if row['type'] == 'first_arrival']), 1)
+
+    def test_unreadable_video_does_not_stop_later_alerts(self):
+        cred = self.root / 'whapi.json'
+        cred.write_text(json.dumps({'token':'test-token'}))
+        clip = self.root / 'clip.mp4'
+        clip.write_bytes(b'test')
+        engine = Engine([config()], self.db)
+        self.addCleanup(engine.close)
+        engine.store.enqueue('a', 'video', dict(destination='12345678901@g.us', media_path=str(clip), text='video'), T)
+        engine.store.enqueue('a', 'text', dict(destination='12345678901@g.us', text='text'), T)
+        provider = Whapi(cred)
+        with patch.object(Path, 'read_bytes', side_effect=PermissionError('unreadable')), \
+             patch.object(provider, 'request', return_value={'sent':True,'message':{'id':'sent-id'}}):
+            Delivery(engine.store, provider).run_once(T)
+        states = {row['key']:row['status'] for row in engine.db.execute('SELECT key,status FROM bw_queue')}
+        self.assertEqual(states, {'video':'pending', 'text':'accepted'})
 
 
 if __name__ == '__main__':

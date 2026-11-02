@@ -59,7 +59,10 @@ class Scheduler:
         while not stop.is_set():
             if input_source:
                 # Do not move timers past events still waiting in the spool.
-                self.engine.advance(input_source.read(self.clock()))
+                horizon = input_source.read(self.clock())
+                if horizon is None:
+                    continue
+                self.engine.advance(horizon)
             else:
                 self.run_once()
             stop.wait(self.interval)
@@ -128,7 +131,8 @@ class JsonlInput:
                     break
         if position >= batch['end'] or partial:
             self.engine.db.execute('DELETE FROM bw_meta WHERE key=?',(batch_key,))
-        return batch['at']
+            return batch['at']
+        return None
 
 
 class WorkerLock:

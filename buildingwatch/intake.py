@@ -25,10 +25,13 @@ class Intake:
                     raise ValueError('Unsupported camera event type')
                 if not isinstance(event.get('id'),str) or not 0 < len(event['id']) <= 256:
                     raise ValueError('Event ID must be a nonempty string of at most 256 characters')
-                at = instant(event['at']).timestamp()
+                parsed_at = instant(event['at'])
+                if not 1900 <= parsed_at.year <= 9997:
+                    raise ValueError('Event timestamp year must be between 1900 and 9997')
+                at = parsed_at.timestamp()
                 if 'reason' in event and (not isinstance(event['reason'],str) or len(event['reason']) > 1000):
                     raise ValueError('Reason must be a string of at most 1000 characters')
-                normalized = {**event,'at':instant(event['at']).isoformat()}
+                normalized = {**event,'at':parsed_at.isoformat()}
                 body = json.dumps(normalized,sort_keys=True,separators=(',',':'))
                 digest = hashlib.sha256(body.encode()).hexdigest()
             except (ValueError,TypeError,KeyError,AttributeError,OverflowError,OSError) as error:
@@ -67,6 +70,14 @@ class Intake:
                     self.store.audit(cutoff,row['building'],'building_removed',event_id=row['id'])
                     continue
                 event = json.loads(row['body'])
+                try:
+                    event_year = instant(event['at']).year
+                    if not 1900 <= event_year <= 9997:
+                        raise ValueError('Event timestamp year must be between 1900 and 9997')
+                except (ValueError,TypeError,KeyError,AttributeError,OverflowError,OSError) as error:
+                    self.store.db.execute("UPDATE bw_events SET status='quarantined' WHERE building=? AND id=?",(row['building'],row['id']))
+                    self.store.audit(cutoff,row['building'],'quarantine_invalid',event_id=row['id'],reason=str(error))
+                    continue
                 state = self.store.state(row['building'])
                 if row['at'] < state.get('watermark',float('-inf')):
                     self.store.db.execute("UPDATE bw_events SET status='quarantined' WHERE building=? AND id=?",(row['building'],row['id']))

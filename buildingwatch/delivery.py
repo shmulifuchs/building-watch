@@ -48,9 +48,13 @@ class Whapi:
     def send(self, body):
         if 'media_path' in body:
             path = Path(body['media_path'])
-            if not path.is_file() or not 0 < path.stat().st_size <= 90_000_000:
-                raise ProviderError('permanent','Video missing or larger than 90 MB; split/re-encode before attaching')
-            media = 'data:video/mp4;name=clip.mp4;base64,'+base64.b64encode(path.read_bytes()).decode()
+            try:
+                if not path.is_file() or not 0 < path.stat().st_size <= 90_000_000:
+                    raise ProviderError('permanent','Video missing or larger than 90 MB; split/re-encode before attaching')
+                data = path.read_bytes()
+            except OSError:
+                raise ProviderError('retryable','Video could not be read') from None
+            media = 'data:video/mp4;name=clip.mp4;base64,'+base64.b64encode(data).decode()
             return self.request('/messages/video',dict(to=body['destination'],media=media,mime_type='video/mp4',caption=body['text']))
         return self.request('/messages/text',dict(to=body['destination'],body=body['text']))
 
