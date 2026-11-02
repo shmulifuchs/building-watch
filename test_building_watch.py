@@ -232,7 +232,7 @@ class ConfigTests(unittest.TestCase):
                        {'destination':'PLACEHOLDER'},{'clip_chunk_seconds':True},{'manual_timeout_seconds':0},
                        {'typo_hours':[]},{'arrival_window':['05:00','12:00']}):
             c=config();c.update(change)
-            with self.subTest(change=change),self.assertRaises((ValueError,KeyError)): Building(c)
+            with self.subTest(change=change),self.assertRaises(ValueError): Building(c)
         for key in ('timezone','weekly_hours','destination'):
             c=config(); del c[key]
             with self.assertRaises(ValueError): Building(c)
