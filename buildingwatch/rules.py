@@ -27,6 +27,23 @@ class Rules:
     def healthy(self, b, s, at):
         return s.get('heartbeat') is not None and not s.get('disconnected') and at-s['heartbeat'] <= b.c['heartbeat_seconds']
 
+    def late_event(self, b, event, observed_at, received_at):
+        """Surface delayed person evidence without replaying old occupancy/timers."""
+        if event['type'] not in ('entry', 'exit', 'activity', 'suspicious_start', 'suspicious_end'):
+            return
+        outside = not b.open_at(utc(observed_at))
+        observed = utc(observed_at).isoformat()
+        text = ('Delayed camera ' + event['type'].replace('_', ' ') + ' observed at ' + observed +
+                ' (reported ' + str(round(max(0, received_at-observed_at), 1)) + ' seconds late). ')
+        if outside:
+            text += 'Outside scheduled hours; review any approved visit for that time. '
+        text += 'Review footage; arrival and occupancy timing may be incomplete.'
+        self.emit(b, 'late:'+event['id'], 'late_camera_event', received_at, text,
+                  observed_at=observed, observation_kind=event['type'],
+                  outside_scheduled_hours=outside)
+        self.media(b, 'late:'+event['id'], 'late_camera_event', received_at,
+                   observed_at-3, observed_at+7, recording_gap_possible=True)
+
     def event(self, b, s, event, at):
         kind, event_id = event['type'],event['id']
         s.setdefault('started',at)
@@ -149,8 +166,17 @@ class Rules:
                     period = 'the upcoming weekend' if friday else 'the upcoming holiday'
                     if holidays:
                         period += ', including '+', '.join(holidays)
+                    prefix = ''
+                    if day < local.date():
+                        # A delayed check-in must not describe a past weekend
+                        # as upcoming. Retain the catch-up audit and routing.
+                        period = ('the weekend starting ' + tomorrow.isoformat() if friday
+                                  else 'the holiday on ' + tomorrow.isoformat())
+                        if holidays:
+                            period += ', including '+', '.join(holidays)
+                        prefix = 'Missed check-in scheduled for ' + day.isoformat() + '. '
                     self.emit(b,'checkin:'+day.isoformat(),'schedule_checkin',at,
-                              'Is anyone expected during '+period+'? Please provide dates and '
+                              prefix+'Is anyone expected during '+period+'? Please provide dates and '
                               'arrival/departure times for operator confirmation. Normal rules '
                               'remain active until approved.',scheduled_for=utc(due).isoformat(),
                               catchup=day<local.date())

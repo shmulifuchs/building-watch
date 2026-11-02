@@ -21,12 +21,21 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class Whapi:
     def __init__(self, credentials):
-        self.token = json.loads(Path(credentials).read_text())['token']
+        self.credentials = Path(credentials)
+        self.token = json.loads(self.credentials.read_text())['token']
         if not isinstance(self.token,str) or not self.token.strip():
             raise ValueError('Missing Whapi token')
         self.opener = urllib.request.build_opener(NoRedirect())
 
     def request(self, path, payload=None):
+        # Read rotations without restarting the worker. Never log credential values.
+        try:
+            token = json.loads(self.credentials.read_text())['token']
+            if not isinstance(token, str) or not token.strip():
+                raise ValueError('Missing token')
+        except (OSError, ValueError, KeyError, TypeError):
+            raise ProviderError('auth', 'Whapi credentials unavailable; repair the private credential file') from None
+        self.token = token
         headers = {'Authorization':'Bearer '+self.token,'Accept':'application/json',
                    'User-Agent':'BuildingWatch/2','Content-Type':'application/json'}
         req = urllib.request.Request('https://gate.whapi.cloud'+path,
@@ -38,7 +47,8 @@ class Whapi:
                     raise ValueError('Expected a JSON object')
                 return result
         except urllib.error.HTTPError as error:
-            outcome = 'retryable' if error.code == 429 else ('unknown' if error.code >= 500 else 'permanent')
+            outcome = ('auth' if error.code in (401, 403) else 'retryable' if error.code == 429
+                       else 'unknown' if error.code >= 500 else 'permanent')
             raise ProviderError(outcome,'HTTP '+str(error.code)) from None
         except urllib.error.URLError as error:
             outcome = 'retryable' if isinstance(error.reason,(socket.gaierror,ConnectionRefusedError)) else 'unknown'
@@ -87,7 +97,14 @@ class Delivery:
         store.db.execute("UPDATE bw_queue SET status='delivery_unknown',error='worker_restart_during_send' WHERE status='sending'")
 
     def run_once(self, now):
-        rows = self.store.db.execute("SELECT * FROM bw_queue WHERE status='pending' AND due<=? ORDER BY id LIMIT 10",(now,)).fetchall()
+        # Older versions permanently failed explicit authentication rejections.
+        # Those requests were rejected, unlike delivery_unknown sends.
+        with self.store.transaction():
+            for row in self.store.db.execute("SELECT id,building FROM bw_queue WHERE status='failed' AND error IN ('HTTP 401','HTTP 403')").fetchall():
+                self.store.db.execute("UPDATE bw_queue SET status='pending',attempts=0,due=? WHERE id=?", (now,row['id']))
+                self.store.audit(now,row['building'],'delivery_authentication_requeued',queue_id=row['id'])
+        auth_hold = self.store.db.execute("SELECT 1 FROM bw_queue WHERE status='pending' AND due>? AND (error IN ('HTTP 401','HTTP 403') OR error LIKE 'Whapi credentials unavailable;%') LIMIT 1", (now,)).fetchone()
+        rows = [] if auth_hold else self.store.db.execute("SELECT * FROM bw_queue WHERE status='pending' AND due<=? ORDER BY id LIMIT 10",(now,)).fetchall()
         for row in rows:
             with self.store.transaction():
                 claimed = self.store.db.execute("UPDATE bw_queue SET status='sending',attempts=attempts+1 WHERE id=? AND status='pending'",(row['id'],)).rowcount
@@ -101,6 +118,13 @@ class Delivery:
                     raise ProviderError('unknown','Provider acceptance not confirmed')
                 self.store.db.execute("UPDATE bw_queue SET status='accepted',provider_id=?,checked=?,due=?,error=NULL WHERE id=?",(message_id,now,now,row['id']))
             except ProviderError as error:
+                if error.outcome == 'auth':
+                    # Hold the batch, preserve its send-attempt budget, and allow
+                    # recovery after the credential is corrected.
+                    self.store.db.execute("UPDATE bw_queue SET status='pending',attempts=?,due=?,error=? WHERE id=?",
+                                          (row['attempts'],now+60,str(error),row['id']))
+                    self.store.audit(now,row['building'],'delivery_authentication_blocked',queue_id=row['id'],error=str(error))
+                    break
                 attempts = row['attempts']+1
                 status = ('pending' if error.outcome == 'retryable' and attempts < self.max_attempts
                           else 'delivery_unknown' if error.outcome == 'unknown' else 'failed')

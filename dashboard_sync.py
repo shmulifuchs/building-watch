@@ -56,8 +56,7 @@ def main():
         with WorkerLock(str(args.connection.parent / 'dashboard-publisher.lock')):
             while not stop.is_set():
                 try:
-                    config = args.config if args.config.exists() else root / 'buildings.pilot.example.json'
-                    publish(snapshot(config, args.db), connection)
+                    publish(snapshot(args.config, args.db), connection)
                     print('Building Watch status updated on your private dashboard.', flush=True)
                 except (ValueError, OSError) as error:
                     print(str(error), flush=True)

@@ -13,6 +13,12 @@ def stamp(value):
     return datetime.fromtimestamp(value, timezone.utc).isoformat() if value is not None else None
 
 
+def dashboard_text(value):
+    # The dashboard's JavaScript schema counts UTF-16 units, not Python code points.
+    # Decode only complete characters when the boundary crosses a surrogate pair.
+    return value.encode('utf-16-le', errors='replace')[:4000].decode('utf-16-le', errors='ignore')
+
+
 def snapshot(config_path, db_path, now=None):
     now = time.time() if now is None else now
     raw = json.loads(Path(config_path).read_text())
@@ -38,7 +44,7 @@ def snapshot(config_path, db_path, now=None):
                 for row in connection.execute('SELECT id,body,status FROM bw_queue WHERE building=? ORDER BY id DESC LIMIT 20', (building.id,)):
                     body = json.loads(row['body'])
                     alerts.append(dict(id=row['id'], type=body['type'], created_at=body['created_at'],
-                                       text=body['text'][:2000], delivery_status=row['status']))
+                                       text=dashboard_text(body['text']), delivery_status=row['status']))
                 for row in connection.execute('SELECT id,body,status FROM bw_media WHERE building=? ORDER BY id DESC LIMIT 20', (building.id,)):
                     body = json.loads(row['body'])
                     recordings.append(dict(id=row['id'], type=body['type'], start=body['start'],
