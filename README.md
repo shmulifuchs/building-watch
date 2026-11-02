@@ -170,3 +170,9 @@ US holidays follow nationwide dates and observed-day rules from [OPM](https://ww
 ## Reviewed reliability fixes
 
 Malformed Unicode IDs and deeply nested input are quarantined. Interrupted HTTP responses no longer stop delivery or publication. Equal-timestamp events are processed before their deadline timers, and person-related suspicious flags cancel departure checks. Credential setup preserves existing ignore rules and directory permissions. Group delivery means at least one matching participant receipt from GET /statuses/{MessageID}; it does not establish delivery to every member. Live provider validation remains required.
+
+## Suspicious recording request boundaries
+
+The v2.1 handoff's clip correction is merged into the current service. A 30.018-second requested interval with ten-second chunks now becomes 10, 10, approximately 9.018, and 1 second, instead of ending with a 0.018-second request. While an event is active, the splitter retains at least one second and rebalances the final requests at closure. Numbering, maximum chunk duration, and full interval coverage are preserved; ordinary chunk sizes of at least two seconds remain contiguous without overlap.
+
+If a preceding chunk was already released by an older version, or the configuration explicitly uses one-second chunks, the final request may overlap its predecessor to reach one second. `overlap_seconds` records that intentional overlap. Existing recording jobs are not changed. Six regression tests in `test_clip_boundaries.py` cover the fractional remainder, exact boundaries, periodic release, sixty-second chunks, one-second chunks, and previously released jobs. This validates recording requests; real camera recording and extraction remain integration work.

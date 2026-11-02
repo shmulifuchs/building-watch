@@ -90,15 +90,32 @@ class Rules:
 
     def chunks(self, b, current, through, final=False, reason=None):
         size = b.c['clip_chunk_seconds']
+        minimum = 1.0
         while through > current['next_start']:
-            end = min(through,current['next_start']+size)
-            if not final and end-current['next_start'] < size:
+            start = current['next_start']
+            remaining = through-start
+            # Retain a usable tail until closure, rather than releasing every
+            # complete chunk and leaving the recorder a fractional remainder.
+            if not final and remaining < size+minimum:
                 break
+            end = min(through,start+size)
+            overlap = 0.0
+            if final and size >= 2*minimum and size < remaining < size+minimum:
+                # The two final clips stay within the size limit and meet the
+                # minimum duration without losing or duplicating any interval.
+                end = through-minimum
+            elif final and remaining < minimum:
+                # A persisted pre-fix state (or a one-second chunk setting) can
+                # have already released the preceding part. Never mutate that
+                # job: include a small, explicitly marked overlap instead.
+                start = through-minimum
+                overlap = current['next_start']-start
             part = current['part']
             self.media(b,'suspicious:'+str(current['start'])+':'+str(part),
-                       'suspicious_activity',through,current['next_start'],end,
+                       'suspicious_activity',through,start,end,
                        event_id=str(current['start']),part=part,final_part=final and end==through,
                        event_end_reason=reason,full_event=True,
+                       overlap_seconds=overlap,
                        recording_gap_possible=current['recording_gap_possible'])
             current['part'] += 1
             current['next_start'] = end
