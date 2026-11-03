@@ -54,7 +54,9 @@ git commit -m "Update Building Watch"
 git push
 ```
 
-Review `git diff --cached` before committing if you have added files outside the private runtime directory. A restored clone can run `./watch test` and `./watch demo` with Python 3.9 or later; no additional Python packages are needed.
+Review `git diff --cached` before committing if you have added files outside the private runtime directory. Direct CLI commands default to `.local/buildings.json` and `.local/watch.sqlite3`, matching `./watch start`. Inspection, delivery, approvals and attachment commands refuse a missing database; only `serve` and `replay` may create one. SQLite lock contention in the scheduler or delivery loop is logged and retried on the next tick. Other database errors still surface. Pending event, delivery-due and visit lookup indexes are created for existing and new databases.
+
+A restored clone can run `./watch test` and `./watch demo` with Python 3.9 or later; no additional Python packages are needed.
 
 ## Test without sending messages
 
@@ -62,9 +64,9 @@ From this folder:
 
 ```sh
 python3 -m unittest -v
-python3 building_watch.py --db demo-v2.sqlite3 replay demo.jsonl --until 2026-11-10T15:00:00-05:00
-python3 building_watch.py --db demo-v2.sqlite3 media-jobs
-python3 building_watch.py --db demo-v2.sqlite3 audit
+python3 building_watch.py --config buildings.example.json --db demo-v2.sqlite3 replay demo.jsonl --until 2026-11-10T15:00:00-05:00
+python3 building_watch.py --config buildings.example.json --db demo-v2.sqlite3 media-jobs
+python3 building_watch.py --config buildings.example.json --db demo-v2.sqlite3 audit
 ```
 
 The sample configuration uses `destination: null` to explicitly select local-only operation. Replay makes no network calls, sorts buffered input, and advances simulated time to `--until`. The demonstration includes identical duplicates, conflicting IDs, and a malformed line; valid events continue processing. The `./watch demo` command writes its results to a new practice directory inside `.local/`.
@@ -84,7 +86,7 @@ The sample configuration uses `destination: null` to explicitly select local-onl
 
 ## Changes addressing the review
 
-1. **Late events:** a durable five-second reorder buffer applies live events in timestamp order. Heartbeats precede other events at equal timestamps. Events older than the committed rules watermark are quarantined with their content retained and an audit entry. Delayed person observations also create a deduplicated late-camera-event alert and a ten-second footage request at the original observation time, with a possible recording gap flagged. These alerts identify off-hours observations without claiming that historical visit approval is known. They do not rewind current occupancy, heartbeat state, or timers. Future timestamps beyond 30 seconds are quarantined. Camera clocks must be synchronized.
+1. **Late events:** a durable reorder buffer (five seconds by default) applies live events in timestamp order. `serve --reorder-seconds 15` can accommodate an eight-second camera lag; the supported range is 0–60 seconds. Heartbeats precede other events at equal timestamps. Events older than the committed rules watermark are quarantined with their content retained and an audit entry. Delayed person observations create a ten-second footage request for every event at its original observation time, with a possible recording gap flagged. Late-event alerts are limited to one per building per ten minutes in each of two independent buckets: scheduled-hours and off-hours. Fresh delayed heartbeats within `heartbeat_seconds` update camera health, while stale heartbeats and heartbeats predating an explicit disconnect cannot falsely establish recovery. These alerts identify off-hours observations without claiming that historical visit approval is known. They do not rewind current occupancy, heartbeat state, or timers. Future timestamps beyond 30 seconds are quarantined. Camera clocks must be synchronized.
 2. **Reused IDs:** normalized event content is hashed. Same ID plus same content is idempotent; different content produces an `id_collision` audit entry with both hashes. The conflicting source input remains in the spool.
 3. **Timers:** `serve` runs its own one-second loop. No `tick` event is needed. Delivery runs separately so slow network requests cannot block timer processing.
 4. **Overnight hours:** `["20:00","02:00"]` crosses midnight. Windows belong to their starting date and can continue into a closed following day. Holidays/overrides control windows starting on that date. Ends are exclusive; equal start/end is rejected. Explicit IANA timezones handle daylight-saving transitions.
@@ -94,8 +96,8 @@ The sample configuration uses `destination: null` to explicitly select local-onl
 8. **First person:** the first entry, detected person activity, exit, or explicit person-related suspicious flag on each local date counts. Presence or exit cannot establish the exact arrival time, so those messages say it is unconfirmed. Each produces a ten-second footage request.
 9. **Visits:** camera input cannot approve a visit, even with an actor field. A separate local operation verifies an operator token hash and building grants. Approvals/denials are audited. The end time is explicitly exclusive; configurable end grace defaults to zero. Visits expire, then are purged after 30 days by default; audit entries remain. This is a trusted local operator interface, not a public login server.
 10. **Long suspicious events:** automatic flags close after a quiet period. Manual flags have a five-minute inactivity lease renewed by continuing person observations/flags. Timeout closure is labeled. Active long events produce contiguous numbered requests of at most 60 seconds by default, preserving the full observed duration without a total event cap. Missing coverage is flagged. These are footage requests until a recorder supplies real files.
-11. **Holiday weekends:** Friday check-ins look ahead four days, including Monday holidays. Pre-holiday check-ins remain enabled. The timer catches up missed reminders across restarts for up to four days and deduplicates by scheduled local date. Delayed messages explicitly name the original check-in date and weekend/holiday dates. Initial installation catches up only today's reminder.
-12. **Delivery:** actual group IDs route alerts to a durable queue. A separate Whapi worker sends text and attached MP4 files, stores provider message IDs, retries known rate-limit rejections and confirmed failures with bounded attempts, and polls delivery status. Provider acceptance is `accepted`, not `delivered`. Ambiguous network results, 5xx responses, or a crash during sending become `delivery_unknown` and are not blindly resent. Acceptance without confirmation for 24 hours becomes `delivery_unconfirmed`. Explicit HTTP 401/403 authentication rejections pause a send batch without exhausting the alert retry budget. The worker reloads its private credential file for each provider request, so correcting that file allows queued alerts to resume; previously failed HTTP 401/403 rows are safely requeued. Ambiguous sends remain held. Investigate these states manually; exactly-once delivery across an ambiguous provider failure is not promised.
+11. **Holiday weekends:** Check-ins run on a working day whose next day starts a closed stretch, using each building's actual hours, holidays, and date overrides. Holiday names within the configured lookahead are included; a building open Saturday is reminded Saturday instead of Friday. The timer catches up missed reminders across restarts for up to four days and deduplicates by scheduled local date. Delayed messages explicitly name the original check-in date and weekend/holiday dates. Initial installation catches up only today's reminder.
+12. **Delivery:** actual group IDs route alerts to a durable queue. A separate Whapi worker sends text and attached MP4 files, stores provider message IDs, retries known rate-limit rejections and confirmed failures with bounded attempts, and polls delivery status. Provider acceptance is `accepted`, not `delivered`. Ambiguous network results, 5xx responses, or a crash during sending become `delivery_unknown` and are not blindly resent. Acceptance without confirmation for 24 hours becomes `delivery_unconfirmed`. Destination HTTP 403 rejections pause only that building for 60 seconds without exhausting its alert retry budget. Missing credentials or channel-level HTTP 401 rejections pause sending across all buildings. The worker reloads its private credential file for each provider request, so correcting that file allows queued alerts to resume; previously failed HTTP 401/403 rows are safely requeued. Ambiguous sends remain held. Investigate these states manually; exactly-once delivery across an ambiguous provider failure is not promised.
 
 Regression coverage includes late/malformed/oversized inputs, persistent buffering, ID collisions, timer autonomy, overnight/DST windows, startup grace, exit retention, authorization, holiday catch-up, routing, retry exhaustion, worker restarts, and delivery confirmation. A long-event test verifies all 8,106 seconds remain covered by contiguous chunks. Delivery tests use a fake provider; the revised worker has not been rerun against the live account.
 
@@ -180,3 +182,11 @@ If a preceding chunk was already released by an older version, or the configurat
 ## External review follow-up
 
 Dashboard alert text is bounded to 2,000 UTF-16 units, matching the browser schema, without cutting an emoji in half. This changes only the exported preview, not the alert retained in SQLite. Late camera evidence and authentication recovery have offline regression coverage; live camera capture, provider delivery, hosting access control and process supervision still need deployment validation.
+
+## Optional additional dashboard authorization
+
+The owner-private Sites access boundary remains required. Optional `STATUS_PUBLISH_KEY` adds an independent publisher check: set it as a hosted secret, then put the same value in the ignored `.local/dashboard.json` under `publish_key`. The publisher sends `X-Building-Watch-Key`; the server compares fixed-length hashes with a native constant-time comparison. Missing or wrong keys return HTTP 401 when configured. Never commit the key.
+
+Optional hosted `OWNER_EMAILS` restricts snapshot reads to a comma-separated list of signed-in owner emails, matched exactly after trimming and case normalization. Other signed-in accounts receive HTTP 403. Both options preserve existing behavior when absent; they are not automatically enabled by this revision.
+
+Suspicious-activity policy is still the existing off-hours/unapproved-person rule plus explicit camera flags. Lingering, repeated visits, forced-entry detection and other new triggers need agreed definitions and camera event support before they can be enabled.

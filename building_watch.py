@@ -3,24 +3,48 @@ import argparse
 import getpass
 import json
 import signal
+import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
 from buildingwatch.calendar_utils import instant
 from buildingwatch.service import Engine,Scheduler,JsonlInput,WorkerLock
 from buildingwatch.delivery import Delivery,Whapi,attach_media
+from buildingwatch.store import database_busy
+
+
+def reorder_window(value):
+    number = int(value)
+    if not 0 <= number <= 60:
+        raise argparse.ArgumentTypeError('Reorder window must be 0–60 seconds')
+    return number
+
+
+def deliver_loop(worker, stop, clock=time.time):
+    while not stop.is_set():
+        try:
+            worker.run_once(clock())
+        except sqlite3.OperationalError as error:
+            if not database_busy(error):
+                raise
+            print('Delivery database is locked; retrying the next tick.', file=sys.stderr, flush=True)
+        stop.wait(5)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config',default=str(Path(__file__).with_name('buildings.example.json')))
-    parser.add_argument('--db',default='building-watch-v2.sqlite3')
+    root = Path(__file__).resolve().parent
+    parser.add_argument('--config',default=str(root / '.local/buildings.json'))
+    parser.add_argument('--db',default=str(root / '.local/watch.sqlite3'))
     sub = parser.add_subparsers(dest='command',required=True)
     replay = sub.add_parser('replay')
     replay.add_argument('events')
     replay.add_argument('--until',required=True,help='Simulated end time with UTC offset')
     serve = sub.add_parser('serve',help='Autonomous timers and camera spool input')
     serve.add_argument('--input',required=True)
+    serve.add_argument('--reorder-seconds',type=reorder_window,default=5,
+                       help='Camera reorder window in seconds (0–60; default 5)')
     for name in ('outbox','media-jobs','audit'):
         sub.add_parser(name)
     deliver = sub.add_parser('deliver',help='Send queued messages and poll confirmations')
@@ -35,11 +59,14 @@ def main():
     media.add_argument('--file',required=True)
     media.add_argument('--media-root',required=True)
     args = parser.parse_args()
+    if args.command not in ('serve', 'replay') and not Path(args.db).is_file():
+        parser.error('Monitoring database does not exist. Start the service with ./watch start or use an existing --db path.')
     raw = json.loads(Path(args.config).read_text())
     if not isinstance(raw,dict) or set(raw) != {'buildings'}:
         parser.error('Configuration must contain only a buildings list')
     operators = json.loads(Path(args.operators).read_text()) if args.command == 'approve-visit' else None
-    engine = Engine(raw['buildings'],args.db,operators)
+    engine = Engine(raw['buildings'],args.db,operators,
+                    reorder_seconds=getattr(args, 'reorder_seconds', 5))
     stop = threading.Event()
     for sig in (signal.SIGINT,signal.SIGTERM):
         signal.signal(sig,lambda *_:stop.set())
@@ -66,9 +93,7 @@ def main():
         elif args.command == 'deliver':
             with WorkerLock(args.db+'.delivery.lock'):
                 worker = Delivery(engine.store,Whapi(args.credentials))
-                while not stop.is_set():
-                    worker.run_once(time.time())
-                    stop.wait(5)
+                deliver_loop(worker, stop)
         elif args.command == 'approve-visit':
             token = getpass.getpass('Operator access token: ')
             print(json.dumps(engine.visits.approve(token,args.building,args.start,args.end,time.time())))

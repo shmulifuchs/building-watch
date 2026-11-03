@@ -64,3 +64,22 @@ with tempfile.TemporaryDirectory() as folder:
   assert.equal(snapshotSchema.safeParse(value).success, true);
   assert.equal(value.buildings[0].alerts[0].text, "😀".repeat(1000));
 });
+
+// Optional controls must fail closed when configured and preserve existing behavior otherwise.
+test("publisher key rejects missing/wrong values and permits only an exact configured key", async () => {
+  const { publisherAllowed } = await import("../lib/access.mjs");
+  assert.equal(publisherAllowed(undefined, null), true);
+  assert.equal(publisherAllowed("", null), true);
+  assert.equal(publisherAllowed("FAKE-TEST-KEY-😀", null), false);
+  assert.equal(publisherAllowed("FAKE-TEST-KEY-😀", "FAKE-WRONG-KEY"), false);
+  assert.equal(publisherAllowed("FAKE-TEST-KEY-😀", "FAKE-TEST-KEY-😀"), true);
+  assert.equal(publisherAllowed("   ", "   "), false);
+});
+test("owner email restrictions reject other signed-in accounts", async () => {
+  const { ownerAllowed } = await import("../lib/access.mjs");
+  assert.equal(ownerAllowed(undefined, "seedy@sites.test"), true);
+  assert.equal(ownerAllowed(" Owner@Example.com, second@example.com ", "owner@example.com"), true);
+  assert.equal(ownerAllowed("owner@example.com", "other@example.com"), false);
+  assert.equal(ownerAllowed("owner@example.com", "owner@example.com.attacker.test"), false);
+  assert.equal(ownerAllowed(" , ", "other@example.com"), false);
+});

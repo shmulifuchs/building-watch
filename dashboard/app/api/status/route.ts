@@ -1,12 +1,16 @@
 import { env } from "cloudflare:workers";
 import { getChatGPTUser } from "../../chatgpt-auth";
 import { snapshotSchema } from "../../../lib/status-schema.mjs";
+import { publisherAllowed, ownerAllowed } from "../../../lib/access.mjs";
 
 export const dynamic = "force-dynamic";
 const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
 
 export async function GET() {
-  if (!await getChatGPTUser()) return Response.json({ error: "Sign in to view your building status." }, { status: 401, headers });
+  const user = await getChatGPTUser();
+  if (!user) return Response.json({ error: "Sign in to view your building status." }, { status: 401, headers });
+  if (!ownerAllowed(env.OWNER_EMAILS, user.email))
+    return Response.json({ error: "This account cannot view building status." }, { status: 403, headers });
   if (!env.DB) return Response.json({ error: "Status storage is unavailable." }, { status: 503, headers });
   const row = await env.DB.prepare("SELECT payload,received_at FROM status_snapshots WHERE id=?")
     .bind("pilot").first<{ payload: string; received_at: number }>();
@@ -17,6 +21,8 @@ export async function GET() {
 // Sites dispatch protects this shared endpoint on the confirmed owner-private Site.
 // The on-site publisher uses the platform service credential; it has no visitor identity.
 export async function POST(request: Request) {
+  if (!publisherAllowed(env.STATUS_PUBLISH_KEY, request.headers.get("X-Building-Watch-Key")))
+    return Response.json({ error: "Publisher authentication required." }, { status: 401, headers });
   const origin = request.headers.get("Origin");
   if (origin && origin !== new URL(request.url).origin) return Response.json({ error: "Origin rejected." }, { status: 403, headers });
   if (!request.headers.get("Content-Type")?.startsWith("application/json"))

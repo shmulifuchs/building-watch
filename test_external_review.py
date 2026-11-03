@@ -45,7 +45,7 @@ class ExternalReviewTests(unittest.TestCase):
         engine = Engine([config()]); self.addCleanup(engine.close)
         engine.advance(T + 20)
         before = copy.deepcopy(engine.store.state('a'))
-        engine.ingest(dict(id='old-hb', building='a', type='heartbeat', at=timestamp(T)), T+20)
+        engine.ingest(dict(id='old-hb', building='a', type='heartbeat', at=timestamp(T-61)), T+20)
         self.assertEqual(engine.store.state('a'), before)
         self.assertEqual(engine.alerts(), [])
 
@@ -59,7 +59,8 @@ class ExternalReviewTests(unittest.TestCase):
         for kind in ('entry','exit','activity','suspicious_start','suspicious_end'):
             engine.ingest(dict(id='old-'+kind, building='a', type=kind, at=timestamp(T-10)), T+1)
         self.assertEqual(engine.store.state('a'), before)
-        self.assertEqual(len([a for a in engine.alerts() if a['type']=='late_camera_event']),5)
+        self.assertEqual(len([a for a in engine.alerts() if a['type']=='late_camera_event']),1)
+        self.assertEqual(len([j for j in engine.media_jobs() if j['type']=='late_camera_event']),5)
 
     def test_monday_catchup_identifies_original_weekend(self):
         from buildingwatch.calendar_utils import instant
@@ -70,7 +71,7 @@ class ExternalReviewTests(unittest.TestCase):
         self.assertEqual(len(reminders),1)
         self.assertTrue(reminders[0]['catchup'])
         self.assertIn('Missed check-in scheduled for 2026-11-06', reminders[0]['text'])
-        self.assertIn('weekend starting 2026-11-07', reminders[0]['text'])
+        self.assertIn('closed period starting 2026-11-07', reminders[0]['text'])
         self.assertNotIn('upcoming weekend', reminders[0]['text'])
 
     def test_pending_event_overtaken_by_watermark_also_alerts_once(self):

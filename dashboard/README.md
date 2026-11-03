@@ -42,3 +42,9 @@ Apply the generated D1 migration to local preview storage before using its statu
 Use a standalone Node.js installation that meets the version requirement. A Node binary embedded in a desktop application can reject native build tools with a macOS error about different signing Team IDs. Running the same project with the official standalone Node.js runtime resolved that error during verification; no signing or security settings were changed.
 
 The build also needs platform-specific optional packages, including `@cloudflare/workerd-darwin-arm64` on Apple Silicon. An interrupted download can leave those packages missing even when the rest of the install appears complete. Use the supported installer above, which includes development and optional dependencies, and retain `package-lock.json`. Restore only the exact locked versions from a verified local installation when downloads are unavailable. Do not change application code or delete the lockfile to work around a missing native package.
+
+## Optional additional access controls
+
+Preserve owner-private Sites access. `STATUS_PUBLISH_KEY` can be configured as a hosted secret to require the same `X-Building-Watch-Key` header on status writes. The Mac connection file accepts an optional `publish_key` for that value. Keys are compared using SHA-256 digests and the native constant-time comparison; missing or wrong values return HTTP 401.
+
+`OWNER_EMAILS` can contain a comma-separated list of signed-in account emails allowed to read snapshots. A non-owner receives HTTP 403. Names are matched exactly after trimming and case normalization. Both controls are inactive when absent or empty; a configured whitespace-only value fails closed. They do not replace the existing Sites access boundary. No secret value belongs in source or browser code.
