@@ -28,7 +28,7 @@ The server validates the snapshot schema, rejects future or old clocks, rejects 
 Requires Node.js 22.13 or later. Use the Sites lifecycle helpers for setup, dependency installation, preview, build, packaging, and publication. Preserve `.openai/hosting.json`, the starter's Sites integration, and the immutable Drizzle migration history.
 
 ```sh
-npm ci
+npm run install:ci
 npm run dev
 node --test tests/status.test.mjs
 node node_modules/typescript/bin/tsc --noEmit
@@ -36,3 +36,9 @@ npm run build
 ```
 
 Apply the generated D1 migration to local preview storage before using its status endpoint. Production migrations are applied by Sites during publication. Local sign-in is the starter's loopback-only mock; production authentication is owned by Sites.
+
+### macOS build troubleshooting
+
+Use a standalone Node.js installation that meets the version requirement. A Node binary embedded in a desktop application can reject native build tools with a macOS error about different signing Team IDs. Running the same project with the official standalone Node.js runtime resolved that error during verification; no signing or security settings were changed.
+
+The build also needs platform-specific optional packages, including `@cloudflare/workerd-darwin-arm64` on Apple Silicon. An interrupted download can leave those packages missing even when the rest of the install appears complete. Use the supported installer above, which includes development and optional dependencies, and retain `package-lock.json`. Restore only the exact locked versions from a verified local installation when downloads are unavailable. Do not change application code or delete the lockfile to work around a missing native package.
