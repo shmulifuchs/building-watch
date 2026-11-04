@@ -1,10 +1,12 @@
 import fcntl
 import json
+import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
 from .config import validate
-from .store import Store
+from .store import Store, database_busy
 from .intake import Intake
 from .rules import Rules
 from .visits import Visits
@@ -57,14 +59,19 @@ class Scheduler:
         self.engine.advance(self.clock())
     def run(self, stop, input_source=None):
         while not stop.is_set():
-            if input_source:
-                # Do not move timers past events still waiting in the spool.
-                horizon = input_source.read(self.clock())
-                if horizon is None:
-                    continue
-                self.engine.advance(horizon)
-            else:
-                self.run_once()
+            try:
+                if input_source:
+                    # Do not move timers past events still waiting in the spool.
+                    horizon = input_source.read(self.clock())
+                    if horizon is None:
+                        continue
+                    self.engine.advance(horizon)
+                else:
+                    self.run_once()
+            except sqlite3.OperationalError as error:
+                if not database_busy(error):
+                    raise
+                print('Monitoring database is locked; retrying the next tick.', file=sys.stderr, flush=True)
             stop.wait(self.interval)
 
 

@@ -24,9 +24,14 @@ def publish(payload, connection):
     token = connection.get('token')
     if not isinstance(token, str) or not token.strip():
         raise ValueError('Dashboard access has not been connected')
-    request = urllib.request.Request(url + '/api/status', data=json.dumps(payload).encode(),
-        headers={'Content-Type': 'application/json', 'Accept': 'application/json',
-                 'OAI-Sites-Authorization': 'Bearer ' + token, 'User-Agent': 'BuildingWatch/2'})
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json',
+               'OAI-Sites-Authorization': 'Bearer ' + token, 'User-Agent': 'BuildingWatch/2'}
+    key = connection.get('publish_key')
+    if key is not None:
+        if not isinstance(key, str) or not key.strip() or any(c in key for c in '\r\n\0'):
+            raise ValueError('Dashboard publish_key must be a nonempty single-line string')
+        headers['X-Building-Watch-Key'] = key
+    request = urllib.request.Request(url + '/api/status', data=json.dumps(payload).encode(), headers=headers)
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=15) as response:
             result = json.load(response)
@@ -56,8 +61,7 @@ def main():
         with WorkerLock(str(args.connection.parent / 'dashboard-publisher.lock')):
             while not stop.is_set():
                 try:
-                    config = args.config if args.config.exists() else root / 'buildings.pilot.example.json'
-                    publish(snapshot(config, args.db), connection)
+                    publish(snapshot(args.config, args.db), connection)
                     print('Building Watch status updated on your private dashboard.', flush=True)
                 except (ValueError, OSError) as error:
                     print(str(error), flush=True)

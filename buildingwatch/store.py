@@ -2,6 +2,16 @@ import json
 import sqlite3
 
 
+def database_busy(error):
+    code = getattr(error, 'sqlite_errorcode', None)
+    if isinstance(code, int) and code & 255 in (5, 6):  # SQLITE_BUSY / SQLITE_LOCKED
+        return True
+    message = str(error).lower()
+    return any(message == value or message.startswith(value + ': ')
+               for value in ('database is locked', 'database table is locked',
+                             'database schema is locked'))
+
+
 class Store:
     def __init__(self, path=':memory:'):
         self.db = sqlite3.connect(path, isolation_level=None)
@@ -23,6 +33,9 @@ class Store:
             body TEXT,status TEXT,path TEXT,UNIQUE(building,key));
         CREATE TABLE IF NOT EXISTS bw_offsets(source TEXT PRIMARY KEY,position INTEGER);
         CREATE TABLE IF NOT EXISTS bw_meta(key TEXT PRIMARY KEY,value TEXT);
+        CREATE INDEX IF NOT EXISTS bw_events_pending ON bw_events(status,at);
+        CREATE INDEX IF NOT EXISTS bw_queue_status_due ON bw_queue(status,due);
+        CREATE INDEX IF NOT EXISTS bw_visits_building ON bw_visits(building,status);
         ''')
 
     def state(self, building):
@@ -50,4 +63,9 @@ class Transaction:
     def __enter__(self):
         self.db.execute('BEGIN IMMEDIATE')
     def __exit__(self, kind, value, traceback):
-        self.db.execute('ROLLBACK' if kind else 'COMMIT')
+        try:
+            self.db.execute('ROLLBACK' if kind else 'COMMIT')
+        except sqlite3.Error:
+            if self.db.in_transaction:
+                self.db.rollback()
+            raise

@@ -59,6 +59,8 @@ class Intake:
                        (event['building'],event['id'],at,digest,body,status))
             if reason:
                 self.store.audit(received_at,event['building'],reason,event_id=event['id'],event_at=at)
+                if reason == 'late_beyond_buffer':
+                    self.rules.late_event(self.buildings[event['building']], normalized, at, received_at)
                 return 'quarantined'
             return 'buffered'
 
@@ -83,6 +85,7 @@ class Intake:
                 if row['at'] < state.get('watermark',float('-inf')):
                     self.store.db.execute("UPDATE bw_events SET status='quarantined' WHERE building=? AND id=?",(row['building'],row['id']))
                     self.store.audit(cutoff,row['building'],'late_beyond_buffer',event_id=row['id'])
+                    self.rules.late_event(self.buildings[row['building']], event, row['at'], cutoff)
                     continue
                 # Advance timers to each event first, so restart catch-up respects gaps between heartbeats.
                 before = math.nextafter(row['at'], float('-inf'))

@@ -27,6 +27,38 @@ class Rules:
     def healthy(self, b, s, at):
         return s.get('heartbeat') is not None and not s.get('disconnected') and at-s['heartbeat'] <= b.c['heartbeat_seconds']
 
+    def late_event(self, b, event, observed_at, received_at):
+        """Surface delayed person evidence without replaying old occupancy/timers."""
+        if event['type'] == 'heartbeat':
+            state = self.store.state(b.id)
+            if (0 <= received_at-observed_at <= b.c['heartbeat_seconds']
+                    and observed_at > state.get('heartbeat', float('-inf'))
+                    and observed_at >= state.get('last_offline', float('-inf'))):
+                self.event(b, state, event, observed_at)
+                self.store.save(b.id, state)
+                self.store.audit(received_at, b.id, 'late_heartbeat_applied',
+                                 event_id=event['id'], observed_at=observed_at)
+            return
+        if event['type'] not in ('entry', 'exit', 'activity', 'suspicious_start', 'suspicious_end'):
+            return
+        outside = not b.open_at(utc(observed_at))
+        observed = utc(observed_at).isoformat()
+        text = ('Delayed camera ' + event['type'].replace('_', ' ') + ' observed at ' + observed +
+                ' (reported ' + str(round(max(0, received_at-observed_at), 1)) + ' seconds late). ')
+        if outside:
+            text += 'Outside scheduled hours; review any approved visit for that time. '
+        text += 'Review footage; arrival and occupancy timing may be incomplete.'
+        bucket = 'late-alert:' + b.id + (':off-hours' if outside else ':scheduled-hours')
+        prior = self.store.db.execute('SELECT value FROM bw_meta WHERE key=?', (bucket,)).fetchone()
+        if prior is None or received_at-float(prior['value']) >= 600:
+            self.emit(b, 'late:'+event['id'], 'late_camera_event', received_at, text,
+                      observed_at=observed, observation_kind=event['type'],
+                      outside_scheduled_hours=outside)
+            self.store.db.execute('INSERT OR REPLACE INTO bw_meta VALUES(?,?)',
+                                  (bucket, str(received_at)))
+        self.media(b, 'late:'+event['id'], 'late_camera_event', received_at,
+                   observed_at-3, observed_at+7, recording_gap_possible=True)
+
     def event(self, b, s, event, at):
         kind, event_id = event['type'],event['id']
         s.setdefault('started',at)
@@ -39,6 +71,7 @@ class Rules:
             return
         if kind == 'offline':
             s['disconnected'] = True
+            s['last_offline'] = at
             if s.get('heartbeat') is not None:
                 self.outage(b,s,at)
             return
@@ -137,20 +170,27 @@ class Rules:
         while day <= local.date():
             due = datetime.combine(day,clock(b.c['checkin_time']),b.zone).timestamp()
             if previous <= due <= at:
-                friday = day.weekday() == 4
                 tomorrow = day+timedelta(days=1)
-                if friday or b.holiday(tomorrow):
+                if b.hours(day) and not b.hours(tomorrow):
                     holidays = []
                     for n in range(1,b.c['reminder_lookahead_days']+1):
                         future = day+timedelta(days=n)
                         name = b.holiday(future)
                         if name:
                             holidays.append(name+' ('+future.isoformat()+')')
-                    period = 'the upcoming weekend' if friday else 'the upcoming holiday'
+                    period = 'the closed period starting ' + tomorrow.isoformat()
                     if holidays:
                         period += ', including '+', '.join(holidays)
+                    prefix = ''
+                    if day < local.date():
+                        # A delayed check-in must not describe a past weekend
+                        # as upcoming. Retain the catch-up audit and routing.
+                        period = 'the closed period starting ' + tomorrow.isoformat()
+                        if holidays:
+                            period += ', including '+', '.join(holidays)
+                        prefix = 'Missed check-in scheduled for ' + day.isoformat() + '. '
                     self.emit(b,'checkin:'+day.isoformat(),'schedule_checkin',at,
-                              'Is anyone expected during '+period+'? Please provide dates and '
+                              prefix+'Is anyone expected during '+period+'? Please provide dates and '
                               'arrival/departure times for operator confirmation. Normal rules '
                               'remain active until approved.',scheduled_for=utc(due).isoformat(),
                               catchup=day<local.date())
