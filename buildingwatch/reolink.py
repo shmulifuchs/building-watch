@@ -252,14 +252,16 @@ class Connector:
             raise
         except CameraError as error:
             self.failures += 1
-            self.log('Camera check failed ({} in a row): {}'.format(self.failures, error))
+            # Log the first failure, the offline report, then once a minute, not every poll.
+            if self.failures in (1, self.offline_after_failures) or self.failures % 60 == 0:
+                self.log('Camera check failed ({} in a row): {}'.format(self.failures, error))
             if self.failures >= self.offline_after_failures and not self.offline_written:
                 written.append(self._write('offline', now, 'Camera unreachable from the connector'))
                 self.offline_written = True
                 self.last_heartbeat = None  # report the next usable frame immediately
             return written
-        if self.failures and self.offline_written:
-            self.log('Camera reachable again.')
+        if self.failures:
+            self.log('Camera reachable again after {} failed checks.'.format(self.failures))
         self.failures, self.offline_written = 0, False
         if present and (not self.person or self.last_activity is None
                         or now - self.last_activity >= self.activity_every):

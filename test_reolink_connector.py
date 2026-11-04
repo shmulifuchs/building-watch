@@ -220,6 +220,7 @@ class ConnectorTests(unittest.TestCase):
         self.camera.close()
         written = self.poll(times=6)
         self.assertEqual([e['type'] for e in written], ['offline'])
+        self.assertEqual(len(self.logs), 2)  # first failure and offline report, not one per poll
         self.camera = FakeCamera()
         self.client.port = self.camera.port
         self.client.token = None
