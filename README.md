@@ -24,7 +24,7 @@ The first start copies the template to `.local/buildings.json` without replacing
 
 ## Private dashboard
 
-Open [Building Watch](https://building-watch-status.horizon-hmc-1229.chatgpt.site) on your phone or Mac and sign in with the owning ChatGPT account. The app shows camera health, service health, the latest alerts and footage requests, and setup progress. Explore demo is explicitly simulated and does not change live records.
+Open your private Building Watch dashboard (its address is kept out of this repository) on your phone or Mac and sign in with the owning ChatGPT account. The app shows camera health, service health, the latest alerts and footage requests, and setup progress. Explore demo is explicitly simulated and does not change live records.
 
 The dashboard source is backed up in `dashboard/`. It has its own Node.js dependencies for website development; the Python monitoring service still uses the standard library only. The deployed Site has its own source repository; `dashboard/` is the matching source backup in this GitHub repository. Start any future web edits from the active Site checkout and use the Sites publishing workflow, then refresh this backup.
 
