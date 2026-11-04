@@ -3,13 +3,16 @@
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from collections import Counter
 from pathlib import Path
 
 from buildingwatch.config import validate
+from buildingwatch.reolink import CameraUnsupported, Connector, ReolinkClient, Spool, load_camera_settings
 
 
 ROOT = Path(__file__).resolve().parent
@@ -44,7 +47,15 @@ def check():
     for building in buildings.values():
         mode = 'local only' if building.destination is None else 'WhatsApp route configured'
         print('  {} | {} | {}'.format(building.name, building.c['timezone'], mode))
-    print('Camera integration: awaiting hardware and a camera connector.')
+    camera = LOCAL / 'camera.json'
+    if camera.exists():
+        settings = load_camera_settings(camera)
+        if settings['building'] not in buildings:
+            raise ValueError('Camera settings name an unknown building: ' + settings['building'])
+        print('Camera: Reolink at {} for {} ({}). Run ./watch camera alongside ./watch start.'.format(
+            settings['host'], settings['building'], settings.get('scheme', 'https')))
+    else:
+        print('Camera: not set up yet. Run python3 camera_setup.py --host <camera IP address>.')
     print('Automatic recording and video extraction: still to be implemented.')
     print('Live WhatsApp testing and continuous operation: still to be completed.')
 
@@ -108,11 +119,37 @@ def start():
     spool = folder / 'camera-events.jsonl'
     spool.touch(exist_ok=True)
     print('Starting the local timer and event service. Press Control-C to stop.', flush=True)
-    print('Camera connector not installed; no real footage is being monitored yet.', flush=True)
+    if not (folder / 'camera.json').exists():
+        print('Camera not set up; run camera_setup.py, then ./watch camera in another Terminal.', flush=True)
+    else:
+        print('Run ./watch camera in another Terminal to feed camera events.', flush=True)
     print('Settings: ' + str(config), flush=True)
     args = [sys.executable, str(ROOT / 'building_watch.py'), '--config', str(config),
             '--db', str(folder / 'watch.sqlite3'), 'serve', '--input', str(spool)]
     os.execv(sys.executable, args)
+
+
+def camera():
+    settings = load_camera_settings(LOCAL / 'camera.json') if (LOCAL / 'camera.json').exists() else None
+    if settings is None:
+        raise ValueError('Camera not set up. Run: python3 camera_setup.py --host <camera IP address>')
+    config = LOCAL / 'buildings.json'
+    buildings = validate(read_config(config if config.exists() else EXAMPLE)['buildings'])
+    if settings['building'] not in buildings:
+        raise ValueError('Camera settings name an unknown building: ' + settings['building'])
+    fields = {k: v for k, v in settings.items() if k != 'building'}
+    connector = Connector(ReolinkClient(**fields), settings['building'],
+                          Spool(local_directory() / 'camera-events.jsonl'))
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
+    print('Watching the camera at {} for {}. Press Control-C to stop.'.format(
+        settings['host'], settings['building']), flush=True)
+    try:
+        connector.run(stop)
+    except CameraUnsupported as error:
+        raise ValueError(str(error) + '. Turn on person detection in the Reolink app.') from None
+    print('Camera connector stopped.')
 
 
 def inspect(command):
@@ -125,7 +162,7 @@ def inspect(command):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['check', 'test', 'demo', 'start', 'status', 'media', 'audit', 'publish'],
+    parser.add_argument('command', choices=['check', 'test', 'demo', 'start', 'camera', 'status', 'media', 'audit', 'publish'],
                         nargs='?', default='check')
     parser.add_argument('--once', action='store_true', help='Publish one dashboard update and exit')
     args = parser.parse_args()
@@ -138,6 +175,8 @@ def main():
             demo()
         elif args.command == 'start':
             start()
+        elif args.command == 'camera':
+            camera()
         elif args.command == 'publish':
             command = [sys.executable, str(ROOT / 'dashboard_sync.py')]
             if args.once:

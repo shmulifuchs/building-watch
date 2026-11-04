@@ -1,6 +1,6 @@
 # Building Watch v2
 
-Revised rules and service core following the twelve-point reliability review. Requires Python 3.9+ on macOS/Linux, standard library only. This is source for a service, not a deployed security system. Camera detection, continuous recording, automatic video extraction, and chat-to-visit approvals still require integration. No live service was started or new WhatsApp messages sent during this revision.
+Revised rules and service core following the twelve-point reliability review. Requires Python 3.9+ on macOS/Linux, standard library only. This is source for a service, not a deployed security system. A Reolink camera connector feeds person detection and camera health into the service; continuous recording, automatic video extraction, and chat-to-visit approvals still require integration. No live service was started or new WhatsApp messages sent during this revision.
 
 ## Quick start in Terminal
 
@@ -163,9 +163,36 @@ python3 building_watch.py --config .local/buildings.json --db .local/watch.sqlit
 
 This trusted local operation queues the file with its building route and numbered caption; camera input cannot invoke it. Files must be at most 90 MB. Reduce bitrate or split at the recorder when needed. The adapter validates containment, extension and size; it does not validate that the bytes match the requested footage or transcode media. Automatic extraction, byte-aware splitting, missing-recording retries, and retention/disk-space handling remain recorder integration work.
 
+## Reolink camera connector
+
+The connector reads the camera's own person detection and checks for a live picture, then writes `heartbeat`, `activity` and `offline` events to `.local/camera-events.jsonl`, the spool `./watch start` reads. It uses the camera's local HTTP(S) API, standard library only, tested with a simulated camera (`test_reolink_connector.py`); it has not yet been run against the real RLC-810A.
+
+One-time setup, with the camera on the same network as the Mac and person (smart) detection turned on in the Reolink app:
+
+```sh
+python3 camera_setup.py --host 192.168.1.50
+```
+
+Use the camera's IP address from the Reolink app (Device Info) or your router. The helper shows the camera's HTTPS certificate fingerprint, asks for the camera password at a hidden prompt, signs in, checks for a usable picture and person detection, and only then saves `.local/camera.json` (owner-readable, ignored by Git). Later connections refuse a different certificate. If the camera has HTTPS turned off, add `--scheme http`; the password then crosses the local network unencrypted. Use `--building` if the building id is not `office-1`, and `--replace` to change saved settings.
+
+Run it next to the service, in its own Terminal:
+
+```sh
+./watch start      # Terminal 1
+./watch camera     # Terminal 2
+```
+
+- **Heartbeat:** every 20 seconds, only when the camera returns a complete JPEG frame (well inside the 60-second `heartbeat_seconds`). A blank or broken image is logged and not counted.
+- **Person activity:** reported when the camera's person detection turns on, then every 10 seconds while someone stays in view, so occupancy and off-hours events stay current.
+- **Outage:** after three failed checks in a row one `offline` event is written; the next usable frame is reported immediately as recovery.
+- **Times** come from the Mac's clock, so the camera clock does not need to be exact.
+- **Sessions** are renewed before they expire and after the camera ends them. The password is sent only in the sign-in request body; the session token goes in request URLs because the camera API requires it. Neither is ever printed.
+
+Not covered yet: entry/exit direction (the connector reports presence as `activity`), recording and clip extraction, and running the connector automatically at startup.
+
 ## Remaining deployment work
 
-Use Reolink's existing iPhone/Android app for live viewing. Before deployment, finish real camera input/recording, automatic clip extraction, continuous inbound chat handling, remote health-agent authentication, service installation/supervision, failed-delivery monitoring, credential rotation and access management. Suspicious rules currently mean off-hours person activity and explicit flags, not general behavior recognition.
+Use Reolink's existing iPhone/Android app for live viewing. Before deployment, validate the camera connector on the real camera, finish recording, automatic clip extraction, continuous inbound chat handling, remote health-agent authentication, service installation/supervision, failed-delivery monitoring, credential rotation and access management. Suspicious rules currently mean off-hours person activity and explicit flags, not general behavior recognition.
 
 US holidays follow nationwide dates and observed-day rules from [OPM](https://www.opm.gov/policy-data-oversight/pay-leave/federal-holidays/). Other calendars use explicit custom dates; regional Inauguration Day and ad hoc future closures are not automatically added. The initial equipment budget remains approximately $1,000; this revision made no purchases or installations.
 
