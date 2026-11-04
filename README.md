@@ -186,9 +186,9 @@ Run it next to the service, in its own Terminal:
 - **Person activity:** reported when the camera's person detection turns on, then every 10 seconds while someone stays in view, so occupancy and off-hours events stay current.
 - **Outage:** after three failed checks in a row one `offline` event is written; the next usable frame is reported immediately as recovery.
 - **Times** come from the Mac's clock, so the camera clock does not need to be exact.
-- **Sessions** are renewed before they expire and after the camera ends them. The password is sent only in the sign-in request body; the session token goes in request URLs because the camera API requires it. Neither is ever printed.
+- **Sessions** are renewed before they expire and after the camera ends them. After a rejected password the connector waits a minute before trying again, so it cannot lock the camera account. Repeated failures and unusable pictures are logged once, then once a minute. The password is sent only in the sign-in request body; the session token goes in request URLs because the camera API requires it. Neither is ever printed.
 
-Not covered yet: entry/exit direction (the connector reports presence as `activity`), recording and clip extraction, and running the connector automatically at startup.
+Not covered yet: entry/exit direction. The connector reports presence as `activity` and never sends `exit`, so the service's possible-last-departure alert does not fire with this connector yet. Also not covered: recording and clip extraction, and running the connector automatically at startup.
 
 ## Remaining deployment work
 

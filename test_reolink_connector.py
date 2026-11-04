@@ -202,13 +202,28 @@ class ConnectorTests(unittest.TestCase):
         with self.assertRaisesRegex(CameraError, 'rejected the login'):
             client.login()
 
+    def test_rejected_password_pauses_logins_for_a_minute(self):
+        client = ReolinkClient('127.0.0.1', 'admin', 'wrong', scheme='http', port=self.camera.port,
+                               clock=self.clock)
+        connector = Connector(client, 'a', Spool(self.spool_path), clock=self.clock, log=self.logs.append)
+        for _ in range(30):
+            connector.poll_once()
+            self.clock.at += 1
+        logins = [r for r in self.camera.requests if 'cmd=Login' in r[0]]
+        self.assertEqual(len(logins), 1)
+        self.clock.at += 31
+        connector.poll_once()
+        logins = [r for r in self.camera.requests if 'cmd=Login' in r[0]]
+        self.assertEqual(len(logins), 2)
+
     def test_unusable_frame_does_not_count_as_a_heartbeat(self):
         for frame in (b'not a picture' * 400, b'\xff\xd8\xff\xd9', JPEG[:-2] + b'\x00\x00\x00'):
             self.camera.frame = frame
             self.assertEqual(self.poll(), [])
-        self.assertEqual(len(self.logs), 3)
+        self.assertEqual(len(self.logs), 1)  # logged once, not every poll
         self.camera.frame = JPEG
         self.assertEqual([e['type'] for e in self.poll()], ['heartbeat'])
+        self.assertIn('Usable picture again after 3', self.logs[-1])
 
     def test_camera_without_person_detection_stops_with_a_clear_reason(self):
         self.camera.people_supported = False
@@ -311,6 +326,11 @@ class SettingsTests(unittest.TestCase):
     def test_https_without_a_saved_fingerprint_is_rejected(self):
         save_settings(self.path, {k: v for k, v in self.settings().items() if k != 'fingerprint_sha256'})
         with self.assertRaisesRegex(ValueError, 'fingerprint'):
+            load_camera_settings(self.path)
+
+    def test_bad_port_is_rejected_with_a_clear_message(self):
+        save_settings(self.path, self.settings(port='8443'))
+        with self.assertRaisesRegex(ValueError, 'port'):
             load_camera_settings(self.path)
 
     def test_unknown_fields_are_rejected(self):

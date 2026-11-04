@@ -67,6 +67,12 @@ def load_camera_settings(path):
     scheme = raw.get('scheme', 'https')
     if scheme not in ('http', 'https'):
         raise ValueError('Camera scheme must be http or https')
+    port = raw.get('port', 443 if scheme == 'https' else 80)
+    if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
+        raise ValueError('Camera port must be a number from 1 to 65535')
+    channel = raw.get('channel', 0)
+    if isinstance(channel, bool) or not isinstance(channel, int) or channel < 0:
+        raise ValueError('Camera channel must be a whole number, usually 0')
     if scheme == 'https' and not raw.get('fingerprint_sha256'):
         raise ValueError('HTTPS camera settings need the certificate fingerprint saved by camera_setup.py')
     return raw
@@ -87,6 +93,7 @@ class ReolinkClient:
         self.min_frame_bytes = min_frame_bytes
         self.clock = clock
         self.token, self.token_expires = None, 0
+        self.login_paused_until = 0
 
     # -- transport -------------------------------------------------------------
     def _connection(self):
@@ -145,16 +152,20 @@ class ReolinkClient:
 
     # -- API -------------------------------------------------------------------
     def login(self):
+        # Reolink cameras lock the account after repeated failed logins; never hammer them.
+        if self.clock() < self.login_paused_until:
+            raise CameraError('Camera login paused after a rejected password; retrying in a minute')
         body = [{'cmd': 'Login', 'action': 0,
                  'param': {'User': {'Version': '0', 'userName': self.username, 'password': self.password}}}]
         _, data = self._request('POST', '/api.cgi', {'cmd': 'Login'}, body)
         try:
             value = self._value(data, 'Login')
         except CameraError:
-            raise CameraError('Camera rejected the login; check the username and password') from None
+            value = {}
         token = (value.get('Token') or {})
         if not token.get('name'):
-            raise CameraError('Camera rejected the login')
+            self.login_paused_until = self.clock() + 60
+            raise CameraError('Camera rejected the login; check the username and password')
         self.token = token['name']
         lease = token.get('leaseTime', 3600)
         lease = lease if isinstance(lease, (int, float)) and lease > 0 else 3600
@@ -226,6 +237,7 @@ class Connector:
         self.person = False
         self.failures = 0
         self.offline_written = False
+        self.bad_frames = 0
 
     def _write(self, kind, at, reason=None):
         self.sequence += 1
@@ -243,10 +255,16 @@ class Connector:
         try:
             if self.last_heartbeat is None or now - self.last_heartbeat >= self.heartbeat_every:
                 if self.client.usable_frame():
+                    if self.bad_frames:
+                        self.log('Usable picture again after {} unusable frames.'.format(self.bad_frames))
+                    self.bad_frames = 0
                     written.append(self._write('heartbeat', now))
                     self.last_heartbeat = now
                 else:
-                    self.log('Camera answered but the frame was not a usable image.')
+                    # No heartbeat is written; the service raises the offline alert on its own.
+                    self.bad_frames += 1
+                    if self.bad_frames == 1 or self.bad_frames % 60 == 0:
+                        self.log('Camera answered but the picture is not usable ({} in a row).'.format(self.bad_frames))
             present = self.client.person_detected()
         except CameraUnsupported:
             raise
