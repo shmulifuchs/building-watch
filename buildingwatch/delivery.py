@@ -160,7 +160,7 @@ class Delivery:
                 self.store.audit(now,row['building'],'delivery_status_check_failed',queue_id=row['id'],error=str(error))
 
 
-def attach_media(store, job_id, path, media_root, now):
+def attach_media(store, job_id, path, media_root, now, recorded_seconds=None):
     path,root = Path(path).resolve(),Path(media_root).resolve()
     if not path.is_relative_to(root) or not path.is_file() or path.suffix.lower() != '.mp4':
         raise ValueError('Attach an existing MP4 inside the configured media root')
@@ -175,6 +175,11 @@ def attach_media(store, job_id, path, media_root, now):
         caption = body['building_name']+': '+body['type'].replace('_',' ')+part+' '+body['start']+' to '+body['end']
         if body.get('recording_gap_possible'):
             caption += ' Camera coverage was interrupted; footage may be incomplete.'
-        store.enqueue(job['building'],'video:'+job['key'],dict(**body,text=caption,media_path=str(path)),now)
+        details = {}
+        if recorded_seconds is not None:
+            caption += ' Footage incomplete: only about {:.0f} of {:.0f} seconds were recorded.'.format(
+                recorded_seconds,body['duration_seconds'])
+            details = dict(footage_incomplete=True,recorded_seconds=recorded_seconds)
+        store.enqueue(job['building'],'video:'+job['key'],dict(**body,**details,text=caption,media_path=str(path)),now)
         store.db.execute("UPDATE bw_media SET status='attached',path=? WHERE id=?",(str(path),job_id))
         store.audit(now,job['building'],'media_attached',job_id=job_id)

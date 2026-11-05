@@ -11,7 +11,7 @@ const recording = z.object({
   id: z.number().int().positive(), type: z.string().min(1).max(100), start: timestamp,
   end: timestamp, duration_seconds: z.number().positive().max(300),
   part: z.number().int().positive().nullable(), final_part: z.boolean(),
-  recording_gap_possible: z.boolean(), status: z.enum(["awaiting_recording", "attached"]),
+  recording_gap_possible: z.boolean(), status: z.enum(["awaiting_recording", "attached", "no_footage", "clip_failed"]),
 }).strict().refine(value => Math.abs(Date.parse(value.end) - Date.parse(value.start) - value.duration_seconds * 1000) < 10,
   "Recording interval must match its duration");
 const building = z.object({
@@ -21,7 +21,7 @@ const building = z.object({
   hours_today: hours, open_now: z.boolean(), destination_configured: z.boolean(),
   heartbeat_seconds: z.number().int().positive(), offline_after_seconds: z.number().int().positive(),
   last_heartbeat: timestamp.nullable(), service_updated_at: timestamp.nullable(),
-  disconnected: z.boolean(), occupancy: z.enum(["person_detected", "unconfirmed"]),
+  disconnected: z.boolean(), occupancy: z.enum(["person_detected", "motion_detected", "unconfirmed"]),
   suspicious_active: z.boolean(), alerts: z.array(alert).max(20), recordings: z.array(recording).max(20),
 }).strict();
 export const snapshotSchema = z.object({

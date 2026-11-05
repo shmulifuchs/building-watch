@@ -22,6 +22,13 @@ test("camera heartbeat ages through delayed and offline independently of fresh u
   assert.equal(cameraState(building, "fresh", now + 120000), "offline");
   assert.equal(cameraState({ ...building, disconnected: true }, "fresh", now), "offline");
 });
+test("clip failures and motion occupancy do not reject a snapshot", () => {
+  for (const status of ["no_footage", "clip_failed"]) {
+    const recording = { id: 1, type: "first_motion", start: "2026-11-05T10:00:00+00:00", end: "2026-11-05T10:00:10+00:00", duration_seconds: 10, part: null, final_part: false, recording_gap_possible: false, status };
+    const parsed = snapshotSchema.safeParse({ ...sample, buildings: [{ ...sample.buildings[0], occupancy: "motion_detected", recordings: [recording] }] });
+    assert.equal(parsed.success, true, status);
+  }
+});
 test("no camera and no service are reported as unconfigured, not healthy", () => {
   assert.equal(cameraState({ ...building, last_heartbeat: null }, "fresh", now), "not_connected");
   assert.equal(serviceState({ ...building, service_updated_at: null }, "fresh", now), "not_started");

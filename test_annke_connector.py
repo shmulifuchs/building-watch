@@ -1,6 +1,7 @@
 """ANNKE connector and clip tests against a simulated camera (no real camera needed)."""
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -16,9 +17,11 @@ from buildingwatch.annke import AnnkeClient, camera_client
 from buildingwatch.delivery import Whapi
 from buildingwatch.recorder import ClipMaker, Recorder, find_ffmpeg, list_segments
 from buildingwatch.reolink import (CameraError, CameraUnsupported, Connector, ReolinkClient, Spool,
-                                   load_camera_settings)
+                                   load_camera_settings, timestamp)
+from buildingwatch.service import Engine
 from buildingwatch.store import Store
 from camera_setup import check_camera
+from test_building_watch import T, config
 
 PASSWORD = 'FAKE:CAMERA/PASSWORD'
 JPEG = b'\xff\xd8' + b'\x00' * 4000 + b'\xff\xd9'
@@ -256,13 +259,13 @@ def segment_name(at):
     return datetime.fromtimestamp(at, timezone.utc).strftime('%Y%m%dT%H%M%SZ.ts')
 
 
-def add_job(store, start, end, destination='123@g.us'):
-    body = dict(building_id='office-1', building_name='First Office', destination=destination,
+def add_job(store, start, end, destination='123@g.us', building='office-1'):
+    body = dict(building_id=building, building_name='First Office', destination=destination,
                 type='suspicious_activity', start=datetime.fromtimestamp(start, timezone.utc).isoformat(),
                 end=datetime.fromtimestamp(end, timezone.utc).isoformat(), duration_seconds=end - start,
                 created_at=datetime.fromtimestamp(start, timezone.utc).isoformat(), part=1)
     return store.db.execute('INSERT INTO bw_media(building,key,body,status) VALUES(?,?,?,?)',
-                            ('office-1', 'job:' + str(start), json.dumps(body), 'awaiting_recording')).lastrowid
+                            (building, 'job:' + str(start), json.dumps(body), 'awaiting_recording')).lastrowid
 
 
 class ClipMakerTests(unittest.TestCase):
@@ -277,17 +280,19 @@ class ClipMakerTests(unittest.TestCase):
         self.store = Store()
         self.clock = Clock(self.START + 100)
         self.calls = []
-        self.fail = False
+        self.broken = False
 
     def fake_ffmpeg(self, command, **options):
         self.calls.append(command)
-        if self.fail:
+        if self.broken:
             raise subprocess.CalledProcessError(1, 'ffmpeg')
         Path(command[-1]).write_bytes(b'fake mp4')
 
     def maker(self, **options):
-        return ClipMaker(self.store, self.segments, self.clips, 'ffmpeg', clock=self.clock,
-                         log=lambda text: None, run_command=self.fake_ffmpeg, **options)
+        options.setdefault('disk_free', lambda folder: 100_000_000_000)
+        return ClipMaker(self.store, 'office-1', self.segments, self.clips, 'ffmpeg', clock=self.clock,
+                         log=lambda text: None, run_command=self.fake_ffmpeg,
+                         building_name='First Office', destination='123@g.us', **options)
 
     def segment(self, offset):
         (self.segments / segment_name(self.START + offset)).write_bytes(b'video')
@@ -326,6 +331,30 @@ class ClipMakerTests(unittest.TestCase):
         self.assertEqual(self.maker().run_once(), [job])
         self.assertEqual(self.calls[0][self.calls[0].index('-ss') + 1], '0.000')
         self.assertEqual(self.calls[0][self.calls[0].index('-t') + 1], '8.000')
+        self.assertTrue(self.queued()[0]['footage_incomplete'])
+        self.assertIn('only about 8 of 23 seconds', self.queued()[0]['text'])
+
+    def test_gap_in_the_middle_is_reported(self):
+        self.segment(0)
+        self.segment(30)
+        add_job(self.store, self.START, self.START + 40)
+        self.maker().run_once()
+        self.assertIn('Footage incomplete', self.queued()[0]['text'])
+        self.assertAlmostEqual(self.queued()[0]['recorded_seconds'], 20, delta=2)  # segments may run long
+
+    def test_footage_ending_early_is_reported(self):
+        self.segment(0)
+        add_job(self.store, self.START, self.START + 30)
+        self.maker().run_once()
+        self.assertIn('only about 10 of 30 seconds', self.queued()[0]['text'])
+
+    def test_full_coverage_has_no_warning(self):
+        for offset in (0, 10, 20):
+            self.segment(offset)
+        add_job(self.store, self.START + 2, self.START + 28)
+        self.maker().run_once()
+        self.assertNotIn('incomplete', self.queued()[0]['text'])
+        self.assertNotIn('footage_incomplete', self.queued()[0])
 
     def test_missing_footage_sends_a_text_alert_once(self):
         job = add_job(self.store, self.START, self.START + 10)
@@ -342,7 +371,7 @@ class ClipMakerTests(unittest.TestCase):
 
     def test_repeated_ffmpeg_failure_stops_and_alerts(self):
         self.segment(0)
-        self.fail = True
+        self.broken = True
         job = add_job(self.store, self.START, self.START + 8)
         maker = self.maker(max_attempts=3)
         for _ in range(4):
@@ -351,6 +380,88 @@ class ClipMakerTests(unittest.TestCase):
         self.assertEqual(self.status(job), 'clip_failed')
         self.assertEqual(self.queued()[0]['type'], 'footage_unavailable')
         self.assertEqual([p for p in self.clips.iterdir()], [])
+
+    def test_footage_never_reaches_another_building(self):
+        self.segment(0)
+        add_job(self.store, self.START, self.START + 8, destination='other@g.us', building='office-2')
+        own = add_job(self.store, self.START + 1, self.START + 8)
+        self.assertEqual(self.maker().run_once(), [own])
+        self.assertEqual([body['destination'] for body in self.queued()], ['123@g.us'])
+        other = self.store.db.execute("SELECT status FROM bw_media WHERE building='office-2'").fetchone()
+        self.assertEqual(other['status'], 'awaiting_recording')
+
+    def old_clip(self, job, queue_status):
+        self.segment(0)
+        self.maker().run_once()
+        clip = self.clips / 'clip-{}.mp4'.format(job)
+        self.store.db.execute('UPDATE bw_queue SET status=?', (queue_status,))
+        self.clock.now += 8 * 86400
+        os.utime(clip, (self.START, self.START))
+        return clip
+
+    def test_clip_waiting_to_send_is_not_deleted(self):
+        job = add_job(self.store, self.START, self.START + 8)
+        clip = self.old_clip(job, 'pending')
+        for status in ('pending', 'sending', 'accepted', 'delivery_unknown', 'failed'):
+            with self.subTest(status):
+                self.store.db.execute('UPDATE bw_queue SET status=?', (status,))
+                self.maker().prune_clips()
+                self.assertTrue(clip.exists())
+
+    def test_old_clip_is_deleted_once_delivered(self):
+        job = add_job(self.store, self.START, self.START + 8)
+        clip = self.old_clip(job, 'delivered')
+        self.maker().prune_clips()
+        self.assertFalse(clip.exists())
+
+    def types(self):
+        return [body['type'] for body in self.queued()]
+
+    def test_stopped_recording_alerts_once_and_recovery_is_reported(self):
+        maker = self.maker(stopped_after=90)
+        self.segment(100)
+        self.clock.now = self.START + 150
+        maker.check_health()
+        self.assertEqual(self.types(), [])
+        self.clock.now = self.START + 300
+        maker.check_health()
+        maker.check_health()
+        self.assertEqual(self.types(), ['recording_stopped'])
+        self.assertEqual(self.queued()[0]['destination'], '123@g.us')
+        self.maker(stopped_after=90).check_health()
+        self.assertEqual(self.types(), ['recording_stopped'])
+        self.segment(301)
+        maker.check_health()
+        self.assertEqual(self.types(), ['recording_stopped', 'recording_restored'])
+
+    def test_low_disk_alerts_once(self):
+        maker = self.maker(disk_free=lambda folder: 1_000_000_000, min_free_gb=5)
+        maker.check_health()
+        maker.check_health()
+        self.assertEqual(self.types(), ['disk_low'])
+
+    def test_low_disk_removes_oldest_video_but_keeps_the_last_hour(self):
+        for offset in range(0, 3700, 10):
+            self.segment(offset)
+        recorder = Recorder('rtsp://x', self.segments, 'ffmpeg', retention_hours=99999,
+                            clock=lambda: self.START + 3700, disk_free=lambda folder: 0)
+        self.assertEqual(recorder.prune(), 10)
+        self.assertEqual(len(list_segments(self.segments)), 360)
+
+    def test_stalled_recording_is_detected(self):
+        self.segment(0)
+        recorder = Recorder('rtsp://x', self.segments, 'ffmpeg', clock=lambda: self.START + 200)
+        self.assertFalse(recorder.stalled(self.START + 150))
+        self.assertTrue(recorder.stalled(self.START + 100))
+
+    def test_half_made_files_are_removed_on_start(self):
+        self.clips.mkdir()
+        leftover, finished = self.clips / 'job-3.working.ts', self.clips / 'clip-3.mp4'
+        leftover.write_bytes(b'x')
+        finished.write_bytes(b'x')
+        self.maker().clean_leftovers()
+        self.assertFalse(leftover.exists())
+        self.assertTrue(finished.exists())
 
     def test_local_only_building_keeps_clip_off_whatsapp(self):
         self.segment(0)
@@ -383,6 +494,64 @@ class ClipMakerTests(unittest.TestCase):
         stop.set()
         thread.join(10)
         self.assertNotIn(PASSWORD, ' '.join(logs))
+
+
+class LabelTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.engine = Engine([config('office-1')])
+
+    def run_event(self, detection):
+        event = dict(id='e1', building='office-1', type='activity', at=timestamp(T + 3600 * 24 * 5))
+        if detection:
+            event['detection'] = detection
+        self.engine.intake.ingest(event, T + 3600 * 24 * 5)
+        self.engine.advance(T + 3600 * 24 * 5 + 10, flush=True)
+        return self.engine.alerts()
+
+    def test_motion_is_never_described_as_a_person(self):
+        alerts = self.run_event('motion')
+        text = ' '.join(alert['text'] for alert in alerts)
+        self.assertIn('first_motion', [alert['type'] for alert in alerts])
+        self.assertIn('motion', text.lower())
+        self.assertNotIn('person detected', text.lower())
+        self.assertNotIn('Person activity', text)
+        state = self.engine.store.state('office-1')
+        self.assertEqual(state['occupancy'], 'motion_detected')
+
+    def test_camera_without_a_label_keeps_person_wording(self):
+        alerts = self.run_event(None)
+        self.assertIn('first_arrival', [alert['type'] for alert in alerts])
+
+    def test_bad_label_is_rejected(self):
+        event = dict(id='e2', building='office-1', type='activity', at=timestamp(T), detection='ghost')
+        self.assertEqual(self.engine.intake.ingest(event, T), 'invalid')
+
+    def test_only_person_event_types_may_claim_a_person(self):
+        self.assertEqual(AnnkeClient('h', 'u', 'p').detection, 'motion')
+        self.assertEqual(AnnkeClient('h', 'u', 'p', event_types=['humanRecognition']).detection, 'person')
+        self.assertEqual(AnnkeClient('h', 'u', 'p', event_types=['humanRecognition', 'VMD']).detection, 'motion')
+
+    def test_connector_labels_activity_events(self):
+        spool = Path(self.folder.name) / 'events.jsonl'
+
+        class Camera:
+            def usable_frame(self):
+                return True
+
+            def person_detected(self):
+                return True
+
+        Connector(Camera(), 'office-1', Spool(spool), clock=lambda: 5000.0, detection='motion').poll_once()
+        events = [json.loads(line) for line in spool.read_text().splitlines()]
+        self.assertNotIn('detection', events[0])
+        self.assertEqual(events[1]['detection'], 'motion')
+
+    def test_dashboard_accepts_every_recorder_status(self):
+        schema = Path('dashboard/lib/status-schema.mjs').read_text()
+        for status in ('awaiting_recording', 'attached', 'no_footage', 'clip_failed', 'motion_detected'):
+            self.assertIn('"{}"'.format(status), schema)
 
 
 @unittest.skipUnless(find_ffmpeg(), 'ffmpeg is not installed')
@@ -418,7 +587,7 @@ class RealVideoTest(unittest.TestCase):
 
             store = Store()
             job = add_job(store, footage[0][0] + 1, footage[0][0] + 6)
-            maker = ClipMaker(store, root / 'recordings', root / 'clips', ffmpeg, segment_seconds=2,
+            maker = ClipMaker(store, 'office-1', root / 'recordings', root / 'clips', ffmpeg, segment_seconds=2,
                               settle_seconds=0, log=print)
             self.assertEqual(maker.run_once(), [job])
             body = json.loads(store.db.execute('SELECT body FROM bw_queue').fetchone()['body'])
@@ -440,6 +609,7 @@ class RealVideoTest(unittest.TestCase):
             self.assertEqual(sent[0][1]['mime_type'], 'video/mp4')
             self.assertTrue(sent[0][1]['media'].startswith('data:video/mp4;'))
             self.assertIn('Part 1.', sent[0][1]['caption'])
+            self.assertNotIn('incomplete', sent[0][1]['caption'])
 
 
 if __name__ == '__main__':

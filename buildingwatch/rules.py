@@ -76,12 +76,15 @@ class Rules:
                 self.outage(b,s,at)
             return
         healthy = self.healthy(b,s,at)
+        motion = event.get('detection') == 'motion'
         if kind in ('entry','exit','activity','suspicious_start'):
             day = utc(at).astimezone(b.zone).date().isoformat()
+            arrival = 'first_motion' if motion else 'first_arrival'
             wording = ('First entry detected today.' if kind == 'entry' else
+                       'First motion detected today; it may not be a person.' if motion else
                        'First person detected today; exact arrival time is unconfirmed.')
-            self.emit(b,'arrival:'+day,'first_arrival',at,wording,observation_kind=kind)
-            self.media(b,'arrival:'+day,'first_arrival',at,at-3,at+7,observation_kind=kind)
+            self.emit(b,'arrival:'+day,arrival,at,wording,observation_kind=kind)
+            self.media(b,'arrival:'+day,arrival,at,at-3,at+7,observation_kind=kind)
         if kind == 'exit':
             s['last_exit'] = dict(id=event_id,at=at,coverage_healthy=healthy)
             s['departure'] = dict(id=event_id,at=at,verified=healthy)
@@ -90,9 +93,9 @@ class Rules:
                              occupancy='unconfirmed')
         if kind in ('entry','activity','suspicious_start'):
             s.pop('departure',None)
-            s['occupancy'] = 'person_detected'
+            s['occupancy'] = 'motion_detected' if motion else 'person_detected'
         if kind in ('entry','activity') and not b.open_at(utc(at)) and not self.visits.expected(b.id,at):
-            self.suspicious(b,s,at,'Person activity outside scheduled or approved hours',False)
+            self.suspicious(b,s,at,('Motion' if motion else 'Person activity')+' outside scheduled or approved hours',False)
         if kind == 'suspicious_start':
             self.suspicious(b,s,at,event.get('reason','Explicitly flagged activity'),True)
         if kind in ('entry','exit','activity') and s.get('suspicious'):

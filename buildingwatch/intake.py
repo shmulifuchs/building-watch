@@ -5,7 +5,7 @@ from .calendar_utils import instant
 
 
 KINDS = {'entry','exit','activity','heartbeat','offline','suspicious_start','suspicious_end'}
-ALLOWED = {'id','building','type','at','reason'}
+ALLOWED = {'id','building','type','at','reason','detection'}
 
 
 class Intake:
@@ -32,6 +32,8 @@ class Intake:
                 at = parsed_at.timestamp()
                 if 'reason' in event and (not isinstance(event['reason'],str) or len(event['reason']) > 1000):
                     raise ValueError('Reason must be a string of at most 1000 characters')
+                if event.get('detection','') not in ('','person','motion'):
+                    raise ValueError('Detection must be person or motion')
                 normalized = {**event,'at':parsed_at.isoformat()}
                 body = json.dumps(normalized,sort_keys=True,separators=(',',':'))
                 digest = hashlib.sha256(body.encode()).hexdigest()

@@ -176,7 +176,10 @@ The ANNKE connector uses the camera's local ISAPI interface with digest sign-in.
 
 - **Detection:** a standard C800 reports motion, so shadows, animals or passing cars can count as activity. To narrow it, set `event_types` in `.local/camera.json`, for example `["humanrecognition"]`, if the camera offers that event.
 - **Recording:** `./watch record` keeps 10-second video segments in `.local/recordings/`, for 12 hours by default (`retention_hours` in `camera.json`). 4K can use several GB per hour; set `"stream": "02"` for the smaller sub-stream. Audio is not recorded.
-- **Clips:** each footage request becomes a 720p H.264 MP4 in `.local/clips/`, joins the WhatsApp queue, and is deleted after 7 days. If footage is missing or a clip fails, the building gets a text alert instead.
+- **Clips:** each footage request becomes a 720p H.264 MP4 in `.local/clips/<building>/`, joins the WhatsApp queue, and is deleted after 7 days once delivery is settled. If some footage is missing, the caption says how much was recorded. If all of it is missing or a clip fails, the building gets a text alert instead.
+- **Recording health:** you get an alert if recording stops or disk space falls below 5 GB, and another when recording recovers. A stalled recording restarts itself. On low disk the oldest video is removed, always keeping the latest hour.
+- **Labels:** a motion camera produces "motion" alerts, not "person" alerts, unless `event_types` lists only person events.
+- **One building for now:** `camera.json` holds one camera. Footage stays separated by building, but several cameras need separate setups.
 - **Password:** while recording, the camera stream address, including its password, is visible to `ps` on this Mac. Use a camera password that is not used anywhere else.
 
 ## Reolink camera connector

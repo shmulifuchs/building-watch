@@ -10,6 +10,7 @@ import tempfile
 import threading
 from collections import Counter
 from pathlib import Path
+from urllib.parse import quote
 
 from buildingwatch.annke import AnnkeClient, camera_client
 from buildingwatch.config import validate
@@ -145,7 +146,7 @@ def camera():
     brand = settings.get('brand', 'reolink')
     client = camera_client(settings)
     connector = Connector(client, settings['building'], Spool(local_directory() / 'camera-events.jsonl'),
-                          id_prefix=brand)
+                          id_prefix=brand, detection=getattr(client, 'detection', None))
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
@@ -176,10 +177,18 @@ def record():
     database = LOCAL / 'watch.sqlite3'
     if not database.exists():
         raise ValueError('Start the service first with ./watch start')
+    config = LOCAL / 'buildings.json'
+    buildings = validate(read_config(config)['buildings'])
+    building = buildings.get(settings['building'])
+    if building is None:
+        raise ValueError('Camera settings name an unknown building: ' + settings['building'])
     hours = settings.get('retention_hours', 12)
-    segments, clips = LOCAL / 'recordings', LOCAL / 'clips'
+    # Each building gets its own folders, so footage can never reach another site's route.
+    folder = quote(building.id, safe='')
+    segments, clips = LOCAL / 'recordings' / folder, LOCAL / 'clips' / folder
     recorder = Recorder(client.rtsp_url(), segments, ffmpeg, retention_hours=hours)
-    maker = ClipMaker(Store(str(database)), segments, clips, ffmpeg)
+    maker = ClipMaker(Store(str(database)), building.id, segments, clips, ffmpeg,
+                      building_name=building.name, destination=building.destination)
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())

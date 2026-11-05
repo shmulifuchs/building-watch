@@ -229,12 +229,12 @@ class Spool:
 class Connector:
     """Polls one camera for one building and writes heartbeat/activity/offline events."""
     def __init__(self, client, building, spool, clock=time.time, heartbeat_every=20,
-                 activity_every=10, offline_after_failures=3, log=print, id_prefix='reolink'):
+                 activity_every=10, offline_after_failures=3, log=print, id_prefix='reolink', detection=None):
         self.client, self.building, self.spool = client, building, spool
         self.clock, self.log = clock, log
         self.heartbeat_every, self.activity_every = heartbeat_every, activity_every
         self.offline_after_failures = offline_after_failures
-        self.id_prefix = id_prefix
+        self.id_prefix, self.detection = id_prefix, detection
         self.run_id = secrets.token_hex(4)
         self.sequence = 0
         self.last_heartbeat = self.last_activity = None
@@ -249,6 +249,8 @@ class Connector:
                  'building': self.building, 'type': kind, 'at': timestamp(at)}
         if reason:
             event['reason'] = reason
+        if kind == 'activity' and self.detection:
+            event['detection'] = self.detection
         self.spool.append(event)
         return event
 

@@ -25,6 +25,7 @@ from buildingwatch.reolink import (JPEG_END, JPEG_START, CameraError, CameraUnsu
                                    ReolinkClient)
 
 DEFAULT_EVENT_TYPES = ('vmd', 'fielddetection', 'linedetection', 'regionentrance')
+PERSON_EVENT_TYPES = {'humanrecognition', 'humandetection', 'pedestrian'}
 MAX_RESPONSE_BYTES = 8_000_000
 MAX_EVENT_BUFFER = 1_000_000
 END_OF_ALERT = b'</EventNotificationAlert>'
@@ -61,6 +62,11 @@ class AnnkeClient:
         self.events_unsupported = False
         self.closed = threading.Event()
         self.thread = None
+
+    @property
+    def detection(self):
+        """What an alert may honestly claim: motion, unless only person events are enabled."""
+        return 'person' if self.event_types and self.event_types <= PERSON_EVENT_TYPES else 'motion'
 
     def _opener(self):
         # One opener per thread: digest handlers keep per-connection nonce state.
