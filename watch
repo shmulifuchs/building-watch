@@ -11,8 +11,11 @@ import threading
 from collections import Counter
 from pathlib import Path
 
+from buildingwatch.annke import AnnkeClient, camera_client
 from buildingwatch.config import validate
-from buildingwatch.reolink import CameraUnsupported, Connector, ReolinkClient, Spool, load_camera_settings
+from buildingwatch.recorder import ClipMaker, Recorder, find_ffmpeg
+from buildingwatch.reolink import CameraUnsupported, Connector, Spool, load_camera_settings
+from buildingwatch.store import Store
 
 
 ROOT = Path(__file__).resolve().parent
@@ -52,11 +55,13 @@ def check():
         settings = load_camera_settings(camera)
         if settings['building'] not in buildings:
             raise ValueError('Camera settings name an unknown building: ' + settings['building'])
-        print('Camera: Reolink at {} for {} ({}). Run ./watch camera alongside ./watch start.'.format(
-            settings['host'], settings['building'], settings.get('scheme', 'https')))
+        print('Camera: {} at {} for {} ({}). Run ./watch camera alongside ./watch start.'.format(
+            settings.get('brand', 'reolink').capitalize(), settings['host'], settings['building'],
+            settings.get('scheme', 'https')))
     else:
         print('Camera: not set up yet. Run python3 camera_setup.py --host <camera IP address>.')
-    print('Automatic recording and video extraction: still to be implemented.')
+    ffmpeg = find_ffmpeg()
+    print('Recording and clips: ' + ('run ./watch record' if ffmpeg else 'install ffmpeg first (brew install ffmpeg)'))
     print('Live WhatsApp testing and continuous operation: still to be completed.')
 
 
@@ -102,7 +107,7 @@ def demo():
     for name, passed in checks.items():
         print('{}  {}'.format('PASS' if passed else 'FAIL', name))
     print('\nResults:', folder)
-    print('Video files are not created yet; these are recording requests.')
+    print('This practice run creates recording requests only; ./watch record makes the real clips.')
     if not all(checks.values()):
         raise ValueError('One or more practice checks failed; inspect the saved results')
 
@@ -137,9 +142,10 @@ def camera():
     buildings = validate(read_config(config if config.exists() else EXAMPLE)['buildings'])
     if settings['building'] not in buildings:
         raise ValueError('Camera settings name an unknown building: ' + settings['building'])
-    fields = {k: v for k, v in settings.items() if k != 'building'}
-    connector = Connector(ReolinkClient(**fields), settings['building'],
-                          Spool(local_directory() / 'camera-events.jsonl'))
+    brand = settings.get('brand', 'reolink')
+    client = camera_client(settings)
+    connector = Connector(client, settings['building'], Spool(local_directory() / 'camera-events.jsonl'),
+                          id_prefix=brand)
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
@@ -148,8 +154,54 @@ def camera():
     try:
         connector.run(stop)
     except CameraUnsupported as error:
-        raise ValueError(str(error) + '. Turn on person detection in the Reolink app.') from None
+        raise ValueError(str(error) + '. Turn on detection in the {} app.'.format(brand.capitalize())) from None
+    finally:
+        if brand == 'annke':
+            client.close()
     print('Camera connector stopped.')
+
+
+def record():
+    """Keep rolling footage and turn footage requests into WhatsApp-ready clips."""
+    path = LOCAL / 'camera.json'
+    if not path.exists():
+        raise ValueError('Camera not set up. Run: python3 camera_setup.py --host <camera IP address>')
+    settings = load_camera_settings(path)
+    client = camera_client(settings)
+    if not isinstance(client, AnnkeClient):
+        raise ValueError('./watch record currently supports ANNKE cameras only')
+    ffmpeg = find_ffmpeg()
+    if ffmpeg is None:
+        raise ValueError('ffmpeg is required for recording. Install it with: brew install ffmpeg')
+    database = LOCAL / 'watch.sqlite3'
+    if not database.exists():
+        raise ValueError('Start the service first with ./watch start')
+    hours = settings.get('retention_hours', 12)
+    segments, clips = LOCAL / 'recordings', LOCAL / 'clips'
+    recorder = Recorder(client.rtsp_url(), segments, ffmpeg, retention_hours=hours)
+    maker = ClipMaker(Store(str(database)), segments, clips, ffmpeg)
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
+    worker = threading.Thread(target=recorder.run, args=(stop,), name='recorder', daemon=True)
+    worker.start()
+    print('Recording {} (keeping {} hours of video). Press Control-C to stop.'.format(
+        settings['building'], hours), flush=True)
+    maker.run(stop)
+    worker.join(15)
+    print('Recording stopped.')
+
+
+def deliver(credentials):
+    """Really sends queued alerts and clips to WhatsApp. Never used by demo or test."""
+    config, database = LOCAL / 'buildings.json', LOCAL / 'watch.sqlite3'
+    if not config.exists() or not database.exists():
+        raise ValueError('Start the service first with ./watch start')
+    if not Path(credentials).is_file():
+        raise ValueError('WhatsApp credentials not found. Run: python3 whatsapp_setup.py --file ' + str(credentials))
+    print('Sending queued alerts and clips to WhatsApp. Press Control-C to stop.', flush=True)
+    os.execv(sys.executable, [sys.executable, str(ROOT / 'building_watch.py'), '--config', str(config),
+                              '--db', str(database), 'deliver', '--credentials', str(credentials)])
 
 
 def inspect(command):
@@ -162,9 +214,11 @@ def inspect(command):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['check', 'test', 'demo', 'start', 'camera', 'status', 'media', 'audit', 'publish'],
+    parser.add_argument('command', choices=['check', 'test', 'demo', 'start', 'camera', 'record', 'deliver', 'status', 'media', 'audit', 'publish'],
                         nargs='?', default='check')
     parser.add_argument('--once', action='store_true', help='Publish one dashboard update and exit')
+    parser.add_argument('--credentials', default=str(LOCAL / 'whapi.json'),
+                        help='Private WhatsApp credential file for ./watch deliver')
     args = parser.parse_args()
     try:
         if args.command == 'test':
@@ -177,6 +231,10 @@ def main():
             start()
         elif args.command == 'camera':
             camera()
+        elif args.command == 'record':
+            record()
+        elif args.command == 'deliver':
+            deliver(args.credentials)
         elif args.command == 'publish':
             command = [sys.executable, str(ROOT / 'dashboard_sync.py')]
             if args.once:

@@ -24,7 +24,8 @@ from urllib.parse import urlencode
 LOGIN_EXPIRED_CODES = {-6, -5}  # "please login first" / session invalid
 JPEG_START, JPEG_END = b'\xff\xd8', b'\xff\xd9'
 CAMERA_FIELDS = {'building', 'host', 'port', 'scheme', 'username', 'password', 'channel',
-                 'fingerprint_sha256', 'min_frame_bytes'}
+                 'fingerprint_sha256', 'min_frame_bytes', 'brand', 'event_types',
+                 'retention_hours', 'rtsp_port', 'stream'}
 
 
 class CameraError(Exception):
@@ -64,6 +65,8 @@ def load_camera_settings(path):
     for key in ('building', 'host', 'username', 'password'):
         if not isinstance(raw.get(key), str) or not raw[key]:
             raise ValueError('Camera settings need ' + key)
+    if raw.get('brand', 'reolink') not in ('reolink', 'annke'):
+        raise ValueError('Camera brand must be reolink or annke')
     scheme = raw.get('scheme', 'https')
     if scheme not in ('http', 'https'):
         raise ValueError('Camera scheme must be http or https')
@@ -226,11 +229,12 @@ class Spool:
 class Connector:
     """Polls one camera for one building and writes heartbeat/activity/offline events."""
     def __init__(self, client, building, spool, clock=time.time, heartbeat_every=20,
-                 activity_every=10, offline_after_failures=3, log=print):
+                 activity_every=10, offline_after_failures=3, log=print, id_prefix='reolink'):
         self.client, self.building, self.spool = client, building, spool
         self.clock, self.log = clock, log
         self.heartbeat_every, self.activity_every = heartbeat_every, activity_every
         self.offline_after_failures = offline_after_failures
+        self.id_prefix = id_prefix
         self.run_id = secrets.token_hex(4)
         self.sequence = 0
         self.last_heartbeat = self.last_activity = None
@@ -241,7 +245,7 @@ class Connector:
 
     def _write(self, kind, at, reason=None):
         self.sequence += 1
-        event = {'id': 'reolink-{}-{}-{}'.format(self.run_id, self.sequence, kind),
+        event = {'id': '{}-{}-{}-{}'.format(self.id_prefix, self.run_id, self.sequence, kind),
                  'building': self.building, 'type': kind, 'at': timestamp(at)}
         if reason:
             event['reason'] = reason

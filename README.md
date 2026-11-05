@@ -163,6 +163,22 @@ python3 building_watch.py --config .local/buildings.json --db .local/watch.sqlit
 
 This trusted local operation queues the file with its building route and numbered caption; camera input cannot invoke it. Files must be at most 90 MB. Reduce bitrate or split at the recorder when needed. The adapter validates containment, extension and size; it does not validate that the bytes match the requested footage or transcode media. Automatic extraction, byte-aware splitting, missing-recording retries, and retention/disk-space handling remain recorder integration work.
 
+## ANNKE camera setup (C800)
+
+The ANNKE connector uses the camera's local ISAPI interface with digest sign-in. It has been tested only against a simulated camera and real ffmpeg video, not yet against a real C800.
+
+1. Power the camera through a PoE injector, PoE switch or PoE NVR on the same network as the Mac. Set its password in the Annke Vision app or on its web page.
+2. Install the video tool once: `brew install ffmpeg`.
+3. Connect the camera: `python3 camera_setup.py --host 192.168.1.64` (use its real address). Turn on motion detection first.
+4. Run each of these in its own Terminal: `./watch start`, `./watch camera`, `./watch record`, and, to really send WhatsApp messages, `./watch deliver`.
+
+`./watch deliver` reads `.local/whapi.json`, created with `python3 whatsapp_setup.py --file .local/whapi.json`. `destination` in `.local/buildings.json` must be a WhatsApp group ID.
+
+- **Detection:** a standard C800 reports motion, so shadows, animals or passing cars can count as activity. To narrow it, set `event_types` in `.local/camera.json`, for example `["humanrecognition"]`, if the camera offers that event.
+- **Recording:** `./watch record` keeps 10-second video segments in `.local/recordings/`, for 12 hours by default (`retention_hours` in `camera.json`). 4K can use several GB per hour; set `"stream": "02"` for the smaller sub-stream. Audio is not recorded.
+- **Clips:** each footage request becomes a 720p H.264 MP4 in `.local/clips/`, joins the WhatsApp queue, and is deleted after 7 days. If footage is missing or a clip fails, the building gets a text alert instead.
+- **Password:** while recording, the camera stream address, including its password, is visible to `ps` on this Mac. Use a camera password that is not used anywhere else.
+
 ## Reolink camera connector
 
 The connector reads the camera's own person detection and checks for a live picture, then writes `heartbeat`, `activity` and `offline` events to `.local/camera-events.jsonl`, the spool `./watch start` reads. It uses the camera's local HTTP(S) API, standard library only, tested with a simulated camera (`test_reolink_connector.py`); it has not yet been run against the real RLC-810A.
