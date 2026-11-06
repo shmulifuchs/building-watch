@@ -172,15 +172,29 @@ The ANNKE connector uses the camera's local ISAPI interface with digest sign-in.
 3. Connect the camera: `python3 camera_setup.py --host 192.168.1.64` (use its real address). Turn on motion detection first.
 4. Run each of these in its own Terminal: `./watch start`, `./watch camera`, `./watch record`, and, to really send WhatsApp messages, `./watch deliver`.
 
+Before relying on it, run `./watch doctor`. It signs in to the real camera, checks the picture and detection, records a few seconds, makes a test clip, and checks the WhatsApp setup, without sending anything. `./watch doctor --send-test` also sends one real test clip to the group.
+
 `./watch deliver` reads `.local/whapi.json`, created with `python3 whatsapp_setup.py --file .local/whapi.json`. `destination` in `.local/buildings.json` must be a WhatsApp group ID.
 
 - **Detection:** a standard C800 reports motion, so shadows, animals or passing cars can count as activity. To narrow it, set `event_types` in `.local/camera.json`, for example `["humanrecognition"]`, if the camera offers that event.
-- **Recording:** `./watch record` keeps 10-second video segments in `.local/recordings/`, for 12 hours by default (`retention_hours` in `camera.json`). 4K can use several GB per hour; set `"stream": "02"` for the smaller sub-stream. Audio is not recorded.
-- **Clips:** each footage request becomes a 720p H.264 MP4 in `.local/clips/<building>/`, joins the WhatsApp queue, and is deleted after 7 days once delivery is settled. If some footage is missing, the caption says how much was recorded. If all of it is missing or a clip fails, the building gets a text alert instead.
+- **Recording:** `./watch record` keeps 10-second video segments in `.local/recordings/`, for 24 hours by default (`retention_hours` in `camera.json`, which also sets how long clips are kept). 4K can use several GB per hour; set `"stream": "02"` for the smaller sub-stream. Audio is not recorded.
+- **Clips:** each footage request becomes a 720p H.264 MP4 in `.local/clips/<building>/`, joins the WhatsApp queue, and is deleted after 24 hours once delivery is settled, or after 7 days at most if a send stays unresolved. Copies already sent to WhatsApp are not deleted. If some footage is missing, the caption says how much was recorded. If all of it is missing or a clip fails, the building gets a text alert instead.
 - **Recording health:** you get an alert if recording stops or disk space falls below 5 GB, and another when recording recovers. A stalled recording restarts itself. On low disk the oldest video is removed, always keeping the latest hour.
 - **Labels:** a motion camera produces "motion" alerts, not "person" alerts, unless `event_types` lists only person events.
 - **One building for now:** `camera.json` holds one camera. Footage stays separated by building, but several cameras need separate setups.
-- **Password:** while recording, the camera stream address, including its password, is visible to `ps` on this Mac. Use a camera password that is not used anywhere else.
+- **Camera account:** while recording, the stream address, including its password, is visible to `ps` on this computer. Create a separate view-only camera user for Building Watch, with a password used nowhere else, so a leak cannot change camera settings.
+- **Never port-forward the camera to the internet.** Sign-in uses local http, which is meant for your own network only.
+- **Recording errors:** ffmpeg's reasons for stopping are saved in `recorder.log` beside the video, with the camera address removed.
+
+## AI clip review
+
+Set `"ai_review": true` for a building in `.local/buildings.json`. Detections then request a short clip, at most one per `review_every_seconds` (60 by default). Up to five still frames go to Claude, which rates them from 0 to 3. Only level 2 and above goes to WhatsApp, and the time of day plays no part.
+
+- **Prompt:** the built-in levels are a draft. Save your own as `.local/ai_prompt.txt`.
+- **If the check fails:** the clip is sent anyway, marked "AI check unavailable".
+- **Daily limit:** `ai_daily_limit` (100 by default) caps paid checks. After that, clips are neither checked nor sent until the next UTC day, and one alert says so.
+- **Needs:** `pip install anthropic` and `ANTHROPIC_API_KEY`. Current SDK releases need Python 3.10 or newer.
+- **Privacy:** frames leave the building for Anthropic's API. The owner should agree to this first.
 
 ## Reolink camera connector
 

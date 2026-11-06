@@ -12,8 +12,10 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
 
+from buildingwatch.ai_review import ClipReviewer, load_prompt
 from buildingwatch.annke import AnnkeClient, camera_client
 from buildingwatch.config import validate
+from buildingwatch.doctor import Doctor
 from buildingwatch.recorder import ClipMaker, Recorder, find_ffmpeg
 from buildingwatch.reolink import CameraUnsupported, Connector, Spool, load_camera_settings
 from buildingwatch.store import Store
@@ -182,12 +184,15 @@ def record():
     building = buildings.get(settings['building'])
     if building is None:
         raise ValueError('Camera settings name an unknown building: ' + settings['building'])
-    hours = settings.get('retention_hours', 12)
+    hours = settings.get('retention_hours', 24)
     # Each building gets its own folders, so footage can never reach another site's route.
     folder = quote(building.id, safe='')
     segments, clips = LOCAL / 'recordings' / folder, LOCAL / 'clips' / folder
     recorder = Recorder(client.rtsp_url(), segments, ffmpeg, retention_hours=hours)
-    maker = ClipMaker(Store(str(database)), building.id, segments, clips, ffmpeg,
+    reviewer = (ClipReviewer(ffmpeg, load_prompt(LOCAL / 'ai_prompt.txt'))
+                if building.c['ai_review'] else None)
+    maker = ClipMaker(Store(str(database)), building.id, segments, clips, ffmpeg, clip_retention_hours=hours,
+                      reviewer=reviewer, ai_daily_limit=building.c['ai_daily_limit'],
                       building_name=building.name, destination=building.destination)
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -223,9 +228,11 @@ def inspect(command):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['check', 'test', 'demo', 'start', 'camera', 'record', 'deliver', 'status', 'media', 'audit', 'publish'],
+    parser.add_argument('command', choices=['check', 'test', 'demo', 'start', 'camera', 'record', 'deliver', 'doctor', 'status', 'media', 'audit', 'publish'],
                         nargs='?', default='check')
     parser.add_argument('--once', action='store_true', help='Publish one dashboard update and exit')
+    parser.add_argument('--send-test', action='store_true',
+                        help='With doctor: really send one short test clip to the WhatsApp group')
     parser.add_argument('--credentials', default=str(LOCAL / 'whapi.json'),
                         help='Private WhatsApp credential file for ./watch deliver')
     args = parser.parse_args()
@@ -244,6 +251,8 @@ def main():
             record()
         elif args.command == 'deliver':
             deliver(args.credentials)
+        elif args.command == 'doctor':
+            return 0 if Doctor(LOCAL).run(send_test=args.send_test) else 1
         elif args.command == 'publish':
             command = [sys.executable, str(ROOT / 'dashboard_sync.py')]
             if args.once:

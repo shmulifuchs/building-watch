@@ -11,7 +11,7 @@ const recording = z.object({
   id: z.number().int().positive(), type: z.string().min(1).max(100), start: timestamp,
   end: timestamp, duration_seconds: z.number().positive().max(300),
   part: z.number().int().positive().nullable(), final_part: z.boolean(),
-  recording_gap_possible: z.boolean(), status: z.enum(["awaiting_recording", "attached", "no_footage", "clip_failed"]),
+  recording_gap_possible: z.boolean(), status: z.enum(["awaiting_recording", "attached", "no_footage", "clip_failed", "ai_cleared", "ai_skipped"]),
 }).strict().refine(value => Math.abs(Date.parse(value.end) - Date.parse(value.start) - value.duration_seconds * 1000) < 10,
   "Recording interval must match its duration");
 const building = z.object({

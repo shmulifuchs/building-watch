@@ -7,7 +7,7 @@ import { snapshotSchema } from "../lib/status-schema.mjs";
 import demoData from "./demo-data.json";
 
 type Alert = { id: number; type: string; created_at: string; text: string; delivery_status: string };
-const clipStatus: Record<string, string> = { attached: "Clip attached locally", no_footage: "No footage recorded", clip_failed: "Clip could not be made" };
+const clipStatus: Record<string, string> = { attached: "Clip attached locally", no_footage: "No footage recorded", clip_failed: "Clip could not be made", ai_cleared: "Checked by AI, nothing flagged", ai_skipped: "Not checked: daily AI limit" };
 type Recording = { id: number; type: string; start: string; end: string; duration_seconds: number; part: number | null; final_part: boolean; recording_gap_possible: boolean; status: string };
 type Building = { id: string; name: string; timezone: string; weekly_hours: Record<string, string[][]>; hours_today: string[][]; open_now: boolean; destination_configured: boolean; heartbeat_seconds: number; offline_after_seconds: number; last_heartbeat: string | null; service_updated_at: string | null; disconnected: boolean; occupancy: string; suspicious_active: boolean; alerts: Alert[]; recordings: Recording[] };
 type Snapshot = { schema_version: number; captured_at: string; buildings: Building[] };

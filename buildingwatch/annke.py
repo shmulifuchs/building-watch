@@ -56,6 +56,7 @@ class AnnkeClient:
         self.base = 'http://{}:{}'.format(host, self.port)
         self.login_paused_until = 0
         self.active_until = 0
+        self.unread_detection = False
         self.buffer = b''
         self.events_connected = False
         self.events_down_since = None
@@ -118,6 +119,7 @@ class AnnkeClient:
             if (kind and state and state.group(1).lower() == b'active'
                     and kind.group(1).decode(errors='replace').lower() in self.event_types):
                 self.active_until = self.clock() + self.hold_seconds
+                self.unread_detection = True  # stays set however slowly the connector polls
 
     def _listen(self):
         path = self.base + '/ISAPI/Event/notification/alertStream'
@@ -162,7 +164,9 @@ class AnnkeClient:
             raise CameraUnsupported('This camera does not offer a detection event stream')
         if not self.events_connected and self.clock() - self.events_down_since >= self.down_after:
             raise CameraError('Camera detection stream is disconnected')
-        return self.clock() < self.active_until
+        detected = self.unread_detection or self.clock() < self.active_until
+        self.unread_detection = False
+        return detected
 
     def rtsp_url(self):
         """Contains the password. Pass only to the recorder; never print or log it."""

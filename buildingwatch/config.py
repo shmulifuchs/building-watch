@@ -5,7 +5,8 @@ from .calendar_utils import us_holidays
 
 
 DEFAULT_HOURS = {str(i): [['09:00', '17:00']] if i < 5 else [] for i in range(7)}
-DEFAULTS = dict(holiday_calendar='US_FEDERAL', inactivity_minutes=15,
+DEFAULTS = dict(holiday_calendar='US_FEDERAL', inactivity_minutes=15, ai_review=False,
+                review_every_seconds=60, ai_daily_limit=100,
                 heartbeat_seconds=60, offline_alert_after_seconds=120,
                 startup_grace_seconds=300, event_quiet_seconds=30,
                 manual_timeout_seconds=300, clip_chunk_seconds=60,
@@ -87,8 +88,10 @@ class Building:
             raise ValueError('removed_holidays must be a list')
         for day in self.c.get('removed_holidays', []):
             iso_date(day)
+        if not isinstance(self.c['ai_review'], bool):
+            raise ValueError('ai_review must be true or false')
         for key, default in DEFAULTS.items():
-            if isinstance(default, int):
+            if isinstance(default, int) and not isinstance(default, bool):
                 value = self.c[key]
                 if isinstance(value, bool) or not isinstance(value, int) or value < (0 if key == 'visit_end_grace_minutes' else 1):
                     raise ValueError(key + ' must be an integer in its valid range')

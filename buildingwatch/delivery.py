@@ -160,7 +160,7 @@ class Delivery:
                 self.store.audit(now,row['building'],'delivery_status_check_failed',queue_id=row['id'],error=str(error))
 
 
-def attach_media(store, job_id, path, media_root, now, recorded_seconds=None):
+def attach_media(store, job_id, path, media_root, now, recorded_seconds=None, note=None):
     path,root = Path(path).resolve(),Path(media_root).resolve()
     if not path.is_relative_to(root) or not path.is_file() or path.suffix.lower() != '.mp4':
         raise ValueError('Attach an existing MP4 inside the configured media root')
@@ -176,6 +176,8 @@ def attach_media(store, job_id, path, media_root, now, recorded_seconds=None):
         if body.get('recording_gap_possible'):
             caption += ' Camera coverage was interrupted; footage may be incomplete.'
         details = {}
+        if note:
+            caption += ' ' + note
         if recorded_seconds is not None:
             caption += ' Footage incomplete: only about {:.0f} of {:.0f} seconds were recorded.'.format(
                 recorded_seconds,body['duration_seconds'])

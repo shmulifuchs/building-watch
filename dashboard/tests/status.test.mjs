@@ -23,7 +23,7 @@ test("camera heartbeat ages through delayed and offline independently of fresh u
   assert.equal(cameraState({ ...building, disconnected: true }, "fresh", now), "offline");
 });
 test("clip failures and motion occupancy do not reject a snapshot", () => {
-  for (const status of ["no_footage", "clip_failed"]) {
+  for (const status of ["no_footage", "clip_failed", "ai_cleared", "ai_skipped"]) {
     const recording = { id: 1, type: "first_motion", start: "2026-11-05T10:00:00+00:00", end: "2026-11-05T10:00:10+00:00", duration_seconds: 10, part: null, final_part: false, recording_gap_possible: false, status };
     const parsed = snapshotSchema.safeParse({ ...sample, buildings: [{ ...sample.buildings[0], occupancy: "motion_detected", recordings: [recording] }] });
     assert.equal(parsed.success, true, status);

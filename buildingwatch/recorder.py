@@ -15,18 +15,34 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
+from buildingwatch.ai_review import ReviewUnavailable
 from buildingwatch.delivery import attach_media
 
 SEGMENT_NAME = re.compile(r'^(\d{8}T\d{6})Z\.ts$')
 CLIP_NAME = re.compile(r'^clip-\d+\.mp4$')
 WORKING_NAME = re.compile(r'^job-\d+\.working\.(ts|mp4)$')
-# A clip may be deleted only after delivery is settled; a failed send can still be retried.
+# A clip may be deleted once delivery is settled. Failed sends count as settled unless
+# they failed on sign-in, because those are retried. Nothing outlives MAX_HOLD_HOURS.
 SETTLED = ('delivered', 'local_only', 'delivery_unconfirmed')
+MAX_HOLD_HOURS = 168
 GIGABYTE = 1_000_000_000
+ADDRESS = re.compile(r'[A-Za-z][A-Za-z0-9+.-]*://\S+')
+MAX_LOG_BYTES = 1_000_000
+
+
+def scrub(line, source):
+    """ffmpeg errors can repeat the stream address, which contains the camera password."""
+    secrets = [source, urlsplit(source).password, unquote(urlsplit(source).password or '')]
+    for secret in secrets:
+        if secret:
+            line = line.replace(secret, '<hidden>')
+    return ADDRESS.sub('<camera stream>', line)
 
 
 def find_ffmpeg():
@@ -73,7 +89,7 @@ def latest_segment(folder):
 
 
 class Recorder:
-    def __init__(self, source, folder, ffmpeg, retention_hours=12, segment_seconds=10,
+    def __init__(self, source, folder, ffmpeg, retention_hours=24, segment_seconds=10,
                  clock=time.time, log=print, min_free_gb=5, disk_free=None, stall_seconds=60):
         self.source, self.folder, self.ffmpeg = source, Path(folder), ffmpeg
         self.retention_seconds = retention_hours * 3600
@@ -82,6 +98,7 @@ class Recorder:
         self.min_free_bytes = min_free_gb * GIGABYTE
         self.disk_free = disk_free or (lambda folder: shutil.disk_usage(folder).free)
         self.stall_seconds = stall_seconds
+        self.last_error = None
 
     def stalled(self, started):
         """ffmpeg can stay running while writing nothing; treat that as a failure."""
@@ -91,11 +108,24 @@ class Recorder:
     def command(self):
         input_options = (['-rtsp_transport', 'tcp', '-timeout', '10000000']
                          if self.source.startswith('rtsp') else [])
-        return [self.ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'quiet', *input_options,
+        return [self.ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', *input_options,
                 '-i', self.source, '-map', '0:v:0', '-an', '-c', 'copy', '-f', 'segment',
                 '-segment_time', str(self.segment_seconds), '-segment_format', 'mpegts',
                 '-strftime', '1',
                 str(self.folder / '%Y%m%dT%H%M%SZ.ts')]
+
+    def keep_errors(self, stream):
+        """Save ffmpeg's reasons for failing, with the camera address removed."""
+        path = self.folder / 'recorder.log'
+        for raw in stream:
+            line = scrub(raw.strip(), self.source)
+            if not line:
+                continue
+            self.last_error = line[:200]
+            mode = 'w' if path.exists() and path.stat().st_size > MAX_LOG_BYTES else 'a'
+            with path.open(mode) as log:
+                log.write(line + '\n')
+            path.chmod(0o600)
 
     def prune(self):
         limit = self.clock() - self.retention_seconds
@@ -116,9 +146,12 @@ class Recorder:
     def run(self, stop, restart_seconds=5):
         self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         while not stop.is_set():
+            self.last_error = None
             process = subprocess.Popen(self.command(), stdin=subprocess.DEVNULL,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                       env=dict(os.environ, TZ='UTC'))
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                       text=True, errors='replace', env=dict(os.environ, TZ='UTC'))
+            reader = threading.Thread(target=self.keep_errors, args=(process.stderr,), daemon=True)
+            reader.start()
             try:
                 checks = 0
                 started = self.clock()
@@ -137,31 +170,39 @@ class Recorder:
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
+            reader.join(2)
+            if not reader.is_alive():
+                process.stderr.close()
             self.prune()
             if not stop.is_set():
-                # The source address contains the password, so it is never logged.
-                self.log('Recording stopped (code {}); retrying.'.format(process.returncode))
+                # The source address contains the password, so only scrubbed text is logged.
+                self.log('Recording stopped (code {}){}; retrying.'.format(
+                    process.returncode, ': ' + self.last_error if self.last_error else ''))
                 stop.wait(restart_seconds)
 
 
 class ClipMaker:
     def __init__(self, store, building, segments, media_root, ffmpeg, clock=time.time, log=print,
                  segment_seconds=10, settle_seconds=None, missing_after=300, max_attempts=3,
-                 clip_retention_days=7, run_command=subprocess.run, gap_tolerance=1.0,
+                 clip_retention_hours=24, run_command=subprocess.run, gap_tolerance=1.0,
                  building_name=None, destination=None, stopped_after=90, min_free_gb=5,
-                 disk_free=None):
+                 disk_free=None, pad_before=3, pad_after=2, reviewer=None, alert_level=2,
+                 ai_daily_limit=100):
         self.store, self.segments, self.media_root = store, Path(segments), Path(media_root)
         self.building, self.building_name = building, building_name or building
         self.destination = destination
         self.started = clock()
+        self.reviewer, self.alert_level, self.ai_daily_limit = reviewer, alert_level, ai_daily_limit
         self.stopped_after = stopped_after
+        # Segment names use this computer's clock, and the stream lags it by a few seconds.
+        self.pad_before, self.pad_after = pad_before, pad_after
         self.min_free_bytes = min_free_gb * GIGABYTE
         self.disk_free = disk_free or (lambda folder: shutil.disk_usage(folder).free)
         self.ffmpeg, self.clock, self.log = ffmpeg, clock, log
         self.segment_seconds = segment_seconds
         self.settle_seconds = segment_seconds + 5 if settle_seconds is None else settle_seconds
         self.missing_after, self.max_attempts = missing_after, max_attempts
-        self.clip_retention_seconds = clip_retention_days * 86400
+        self.clip_retention_seconds = clip_retention_hours * 3600
         self.run_command = run_command
         self.gap_tolerance = gap_tolerance
         self.attempts = {}
@@ -190,14 +231,14 @@ class ClipMaker:
         working = self.media_root / 'job-{}.working.mp4'.format(job_id)
         output = self.media_root / 'clip-{}.mp4'.format(job_id)
         first = selected[0][0]
-        begin = max(start, first)
+        begin = max(start - self.pad_before, first)
         try:
             # MPEG-TS segments keep running timestamps, so joining their bytes is exact.
             with joined.open('wb') as stream:
                 for item in selected:
                     with item[2].open('rb') as segment:
                         shutil.copyfileobj(segment, stream)
-            self.run_command(self.command(joined, begin - first, end - begin, working),
+            self.run_command(self.command(joined, begin - first, end + self.pad_after - begin, working),
                              check=True, timeout=300, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             os.replace(working, output)
@@ -205,6 +246,45 @@ class ClipMaker:
             joined.unlink(missing_ok=True)
             working.unlink(missing_ok=True)
         return output
+
+    def _used_today(self, now):
+        """Count this AI check; the daily limit keeps constant motion from running up a bill."""
+        day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+        key = 'ai-count:{}:{}'.format(self.building, day)
+        with self.store.transaction():
+            row = self.store.db.execute('SELECT value FROM bw_meta WHERE key=?', (key,)).fetchone()
+            used = int(row['value']) if row else 0
+            if used < self.ai_daily_limit:
+                self.store.db.execute('INSERT OR REPLACE INTO bw_meta VALUES(?,?)', (key, str(used + 1)))
+        return used
+
+    def _finish_without_sending(self, job, output, status, now, **detail):
+        with self.store.transaction():
+            self.store.db.execute('UPDATE bw_media SET status=? WHERE id=?', (status, job['id']))
+            self.store.audit(now, job['building'], 'media_' + status, job_id=job['id'], **detail)
+        output.unlink(missing_ok=True)
+
+    def _check(self, job, body, output, now):
+        """Decide whether a clip goes out. Returns (send, caption note)."""
+        if self.reviewer is None or body['type'] != 'activity_review':
+            return True, None
+        used = self._used_today(now)
+        if used >= self.ai_daily_limit:
+            self._finish_without_sending(job, output, 'ai_skipped', now)
+            self._flag('ai-limit:' + str(int(now // 86400)), True, now, 'ai_limit_reached',
+                       'The daily AI check limit was reached. New clips are not being checked '
+                       'or sent until tomorrow.')
+            return False, None
+        try:
+            verdict = self.reviewer.review(output)
+        except ReviewUnavailable as error:
+            self.log('AI check unavailable for job {}: {}'.format(job['id'], error))
+            return True, 'AI check unavailable; please review this clip.'
+        if verdict['level'] < self.alert_level:
+            self._finish_without_sending(job, output, 'ai_cleared', now, level=verdict['level'],
+                                         summary=verdict['summary'])
+            return False, None
+        return True, 'AI level {}: {}'.format(verdict['level'], verdict['summary'])
 
     def run_once(self):
         """Handle every job whose footage should now exist. Returns finished job ids."""
@@ -218,9 +298,10 @@ class ClipMaker:
             body = json.loads(job['body'])
             start = datetime.fromisoformat(body['start']).timestamp()
             end = datetime.fromisoformat(body['end']).timestamp()
-            if now < end + self.settle_seconds:
+            if now < end + self.pad_after + self.settle_seconds:
                 continue
-            selected = [item for item in available if item[0] < end and item[1] > start]
+            selected = [item for item in available if item[0] < end + self.pad_after
+                        and item[1] > start - self.pad_before]
             if not selected:
                 if now >= end + self.missing_after:
                     self._give_up(job, body, 'no_footage',
@@ -230,10 +311,14 @@ class ClipMaker:
                 continue
             try:
                 output = self._make(job['id'], start, end, selected)
+                send, note = self._check(job, body, output, now)
+                if not send:
+                    done.append(job['id'])
+                    continue
                 covered = covered_seconds(selected, start, end)
                 missing = end - start - covered > self.gap_tolerance
                 attach_media(self.store, job['id'], output, self.media_root, now,
-                             recorded_seconds=round(covered, 1) if missing else None)
+                             recorded_seconds=round(covered, 1) if missing else None, note=note)
                 self.attempts.pop(job['id'], None)
                 done.append(job['id'])
             except (subprocess.SubprocessError, OSError, ValueError) as error:
@@ -250,6 +335,7 @@ class ClipMaker:
 
     def prune_clips(self):
         limit = self.clock() - self.clip_retention_seconds
+        final = self.clock() - MAX_HOLD_HOURS * 3600
         if self.media_root.is_dir():
             marks = ','.join('?' * len(SETTLED))
             for item in self.media_root.iterdir():
@@ -257,9 +343,10 @@ class ClipMaker:
                     continue
                 waiting = self.store.db.execute(
                     "SELECT 1 FROM bw_media m JOIN bw_queue q ON q.building=m.building "
-                    "AND q.key='video:'||m.key WHERE m.path=? AND q.status NOT IN (" + marks + ") LIMIT 1",
+                    "AND q.key='video:'||m.key WHERE m.path=? AND q.status NOT IN (" + marks + ") "
+                    "AND (q.status<>'failed' OR q.error IN ('HTTP 401','HTTP 403')) LIMIT 1",
                     (str(item.resolve()), *SETTLED)).fetchone()
-                if not waiting:
+                if not waiting or item.stat().st_mtime < final:
                     item.unlink(missing_ok=True)
 
     def clean_leftovers(self):

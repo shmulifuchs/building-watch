@@ -8,13 +8,16 @@ import subprocess
 import tempfile
 import threading
 import time
+import types
 import unittest
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from buildingwatch.ai_review import DRAFT_PROMPT, ClipReviewer, ReviewUnavailable, load_prompt
 from buildingwatch.annke import AnnkeClient, camera_client
 from buildingwatch.delivery import Whapi
+from buildingwatch.doctor import Doctor
 from buildingwatch.recorder import ClipMaker, Recorder, find_ffmpeg, list_segments
 from buildingwatch.reolink import (CameraError, CameraUnsupported, Connector, ReolinkClient, Spool,
                                    load_camera_settings, timestamp)
@@ -199,6 +202,17 @@ class AnnkeClientTests(unittest.TestCase):
         client.feed(alert('fielddetection', 'active')[40:])
         self.assertEqual(client.active_until, self.clock.now + 5)
 
+    def test_short_detection_survives_a_slow_poll(self):
+        client = self.client()
+        self.camera.events_supported = True
+        client.start_events()
+        self.assertTrue(wait_for(lambda: client.events_connected))
+        client.feed(alert('VMD'))
+        self.clock.now += 60
+        client.events_down_since = self.clock.now
+        self.assertTrue(client.person_detected())
+        self.assertFalse(client.person_detected())
+
     def test_event_list_can_be_limited_to_people(self):
         client = self.client(event_types=['humanrecognition'])
         client.feed(alert('VMD'))
@@ -290,6 +304,8 @@ class ClipMakerTests(unittest.TestCase):
 
     def maker(self, **options):
         options.setdefault('disk_free', lambda folder: 100_000_000_000)
+        options.setdefault('pad_before', 0)
+        options.setdefault('pad_after', 0)
         return ClipMaker(self.store, 'office-1', self.segments, self.clips, 'ffmpeg', clock=self.clock,
                          log=lambda text: None, run_command=self.fake_ffmpeg,
                          building_name='First Office', destination='123@g.us', **options)
@@ -381,6 +397,46 @@ class ClipMakerTests(unittest.TestCase):
         self.assertEqual(self.queued()[0]['type'], 'footage_unavailable')
         self.assertEqual([p for p in self.clips.iterdir()], [])
 
+    def test_clips_are_padded_for_stream_lag_without_changing_the_coverage_check(self):
+        for offset in (0, 10, 20, 30):
+            self.segment(offset)
+        add_job(self.store, self.START + 12, self.START + 25)
+        self.maker(pad_before=3, pad_after=2).run_once()
+        command = self.calls[0]
+        self.assertEqual(command[command.index('-ss') + 1], '9.000')
+        self.assertEqual(command[command.index('-t') + 1], '18.000')
+        self.assertNotIn('incomplete', self.queued()[0]['text'])
+
+    def test_padding_waits_for_the_extra_footage(self):
+        self.segment(0)
+        job = add_job(self.store, self.START, self.START + 90)
+        self.assertEqual(self.maker(pad_after=2, settle_seconds=9).run_once(), [])
+        self.assertEqual(self.status(job), 'awaiting_recording')
+
+    def test_recording_errors_are_saved_without_the_password(self):
+        source = 'rtsp://admin:p%40ss%2F1@192.168.1.64:554/Streaming/Channels/101'
+        script = self.root / 'fake-ffmpeg'
+        script.write_text('#!/bin/sh\necho "{0}: Connection refused" >&2\n'
+                          'echo "login failed for password p@ss/1" >&2\nexit 1\n'.format(source))
+        script.chmod(0o700)
+        logs = []
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        recorder = Recorder(source, self.segments, str(script), log=logs.append)
+        thread = threading.Thread(target=recorder.run, args=(stop,), kwargs=dict(restart_seconds=0.01), daemon=True)
+        thread.start()
+        self.assertTrue(wait_for(lambda: logs, 5))
+        stop.set()
+        thread.join(10)
+        saved = (self.segments / 'recorder.log').read_text()
+        self.assertIn('Connection refused', saved)
+        self.assertIn('login failed', saved + logs[0])
+        for text in (saved, ' '.join(logs)):
+            self.assertNotIn('p@ss', text)
+            self.assertNotIn('p%40ss', text)
+            self.assertNotIn('rtsp://', text)
+        self.assertEqual((self.segments / 'recorder.log').stat().st_mode & 0o777, 0o600)
+
     def test_footage_never_reaches_another_building(self):
         self.segment(0)
         add_job(self.store, self.START, self.START + 8, destination='other@g.us', building='office-2')
@@ -395,18 +451,42 @@ class ClipMakerTests(unittest.TestCase):
         self.maker().run_once()
         clip = self.clips / 'clip-{}.mp4'.format(job)
         self.store.db.execute('UPDATE bw_queue SET status=?', (queue_status,))
-        self.clock.now += 8 * 86400
+        self.clock.now += 2 * 86400
         os.utime(clip, (self.START, self.START))
         return clip
 
     def test_clip_waiting_to_send_is_not_deleted(self):
         job = add_job(self.store, self.START, self.START + 8)
         clip = self.old_clip(job, 'pending')
-        for status in ('pending', 'sending', 'accepted', 'delivery_unknown', 'failed'):
+        for status in ('pending', 'sending', 'accepted', 'delivery_unknown'):
             with self.subTest(status):
                 self.store.db.execute('UPDATE bw_queue SET status=?', (status,))
                 self.maker().prune_clips()
                 self.assertTrue(clip.exists())
+
+    def test_failed_sign_in_keeps_the_clip_for_retry_but_other_failures_do_not(self):
+        job = add_job(self.store, self.START, self.START + 8)
+        clip = self.old_clip(job, 'failed')
+        self.store.db.execute("UPDATE bw_queue SET error='HTTP 401'")
+        self.maker().prune_clips()
+        self.assertTrue(clip.exists())
+        self.store.db.execute("UPDATE bw_queue SET error='HTTP 400'")
+        self.maker().prune_clips()
+        self.assertFalse(clip.exists())
+
+    def test_no_clip_is_kept_past_the_final_limit(self):
+        job = add_job(self.store, self.START, self.START + 8)
+        clip = self.old_clip(job, 'delivery_unknown')
+        self.clock.now += 6 * 86400
+        self.maker().prune_clips()
+        self.assertFalse(clip.exists())
+
+    def test_clip_is_kept_for_the_first_24_hours(self):
+        job = add_job(self.store, self.START, self.START + 8)
+        clip = self.old_clip(job, 'delivered')
+        os.utime(clip, (self.clock.now - 23 * 3600, self.clock.now - 23 * 3600))
+        self.maker().prune_clips()
+        self.assertTrue(clip.exists())
 
     def test_old_clip_is_deleted_once_delivered(self):
         job = add_job(self.store, self.START, self.START + 8)
@@ -496,6 +576,147 @@ class ClipMakerTests(unittest.TestCase):
         self.assertNotIn(PASSWORD, ' '.join(logs))
 
 
+class FakeResponse:
+    def __init__(self, text='', stop_reason='end_turn'):
+        self.stop_reason = stop_reason
+        self.content = [types.SimpleNamespace(type='text', text=text)]
+
+
+class FakeClient:
+    def __init__(self, response):
+        self.response, self.calls = response, []
+        self.beta = types.SimpleNamespace(messages=self)
+
+    def create(self, **options):
+        self.calls.append(options)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+class ReviewerTests(unittest.TestCase):
+    def fake_frames(self, command, **options):
+        for number in (1, 2):
+            Path(command[-1].replace('%02d', '0' + str(number))).write_bytes(b'jpeg')
+
+    def review(self, response, run=None):
+        self.client = FakeClient(response)
+        return ClipReviewer('ffmpeg', client=self.client, run_command=run or self.fake_frames).review('clip.mp4')
+
+    def test_valid_answer_and_request_shape(self):
+        verdict = self.review(FakeResponse('{"level": 2, "summary": "Person  forcing   a door."}'))
+        self.assertEqual(verdict, dict(level=2, summary='Person forcing a door.'))
+        call = self.client.calls[0]
+        self.assertEqual(call['model'], 'claude-opus-5-5')
+        self.assertEqual(call['fallbacks'], 'default')
+        self.assertEqual(call['betas'], ['server-side-fallback-2026-07-01'])
+        self.assertEqual(len([b for b in call['messages'][0]['content'] if b['type'] == 'image']), 2)
+        self.assertNotIn('thinking', call)
+
+    def test_prompt_ignores_time_and_avoids_identifying_people(self):
+        self.assertIn('do not make anything suspicious', DRAFT_PROMPT)
+        self.assertIn('Do not identify anyone', DRAFT_PROMPT)
+
+    def test_every_failure_becomes_unavailable(self):
+        for response in (FakeResponse('', 'refusal'), FakeResponse('not json'), FakeResponse('{"level": 9, "summary": "x"}'),
+                         FakeResponse('{"level": true, "summary": "x"}'), RuntimeError('network key=SECRET')):
+            with self.subTest(str(response)):
+                with self.assertRaises(ReviewUnavailable) as caught:
+                    self.review(response)
+                self.assertNotIn('SECRET', str(caught.exception))
+
+    def test_no_frames_is_unavailable(self):
+        with self.assertRaises(ReviewUnavailable):
+            self.review(FakeResponse('{}'), run=lambda command, **options: None)
+
+    def test_private_prompt_replaces_the_draft(self):
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / 'ai_prompt.txt'
+            self.assertEqual(load_prompt(path), DRAFT_PROMPT)
+            path.write_text('My own rules')
+            self.assertEqual(load_prompt(path), 'My own rules')
+
+
+class StubReviewer:
+    def __init__(self, level=None):
+        self.level, self.seen = level, 0
+
+    def review(self, clip):
+        self.seen += 1
+        if self.level is None:
+            raise ReviewUnavailable('down')
+        return dict(level=self.level, summary='Person at the door.')
+
+
+class AiClipTests(ClipMakerTests):
+    def job(self, kind='activity_review'):
+        self.segment(0)
+        job = add_job(self.store, self.START, self.START + 8)
+        self.store.db.execute('UPDATE bw_media SET body=json_set(body,"$.type",?) WHERE id=?', (kind, job))
+        return job
+
+    def test_low_levels_stay_off_whatsapp_and_the_clip_is_removed(self):
+        for level in (0, 1):
+            with self.subTest(level):
+                self.store = Store()
+                job = self.job()
+                self.maker(reviewer=StubReviewer(level)).run_once()
+                self.assertEqual(self.status(job), 'ai_cleared')
+                self.assertEqual(self.queued(), [])
+                self.assertFalse((self.clips / 'clip-{}.mp4'.format(job)).exists())
+
+    def test_level_two_and_up_is_sent_with_the_reason(self):
+        job = self.job()
+        self.maker(reviewer=StubReviewer(2)).run_once()
+        self.assertEqual(self.status(job), 'attached')
+        self.assertIn('AI level 2: Person at the door.', self.queued()[0]['text'])
+
+    def test_failed_check_still_sends_the_clip(self):
+        self.job()
+        self.maker(reviewer=StubReviewer(None)).run_once()
+        self.assertIn('AI check unavailable', self.queued()[0]['text'])
+
+    def test_other_clips_skip_the_ai(self):
+        reviewer = StubReviewer(0)
+        job = self.job('late_camera_event')
+        self.maker(reviewer=reviewer).run_once()
+        self.assertEqual(reviewer.seen, 0)
+        self.assertEqual(self.status(job), 'attached')
+
+    def test_daily_limit_stops_paid_checks_and_alerts_once(self):
+        reviewer = StubReviewer(0)
+        maker = self.maker(reviewer=reviewer, ai_daily_limit=1)
+        first, second, third = self.job(), None, None
+        second = add_job(self.store, self.START + 1, self.START + 8)
+        third = add_job(self.store, self.START + 2, self.START + 8)
+        for job in (second, third):
+            self.store.db.execute('UPDATE bw_media SET body=json_set(body,"$.type","activity_review") WHERE id=?', (job,))
+        maker.run_once()
+        self.assertEqual(reviewer.seen, 1)
+        self.assertEqual(self.status(first), 'ai_cleared')
+        self.assertEqual(self.status(third), 'ai_skipped')
+        self.assertEqual([body['type'] for body in self.queued()], ['ai_limit_reached'])
+
+
+class AiRuleTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = Engine([config('office-1', ai_review=True)])
+
+    def send(self, offset):
+        at = T + 5 * 86400 + offset
+        self.engine.intake.ingest(dict(id='e' + str(offset), building='office-1', type='activity',
+                                       at=timestamp(at), detection='motion'), at)
+        self.engine.advance(at + 6)
+
+    def test_time_of_day_creates_no_alerts_and_clips_are_rate_limited(self):
+        self.send(0)
+        self.send(30)
+        self.send(70)
+        self.assertEqual([job['type'] for job in self.engine.media_jobs()], ['activity_review'] * 2)
+        self.assertEqual(self.engine.alerts(), [])
+        self.assertFalse(self.engine.store.state('office-1').get('suspicious'))
+
+
 class LabelTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
@@ -554,6 +775,106 @@ class LabelTests(unittest.TestCase):
             self.assertIn('"{}"'.format(status), schema)
 
 
+class DoctorTests(unittest.TestCase):
+    PASSWORD_URL = 'rtsp://admin:SECRET@camera/101'
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.local = Path(folder.name)
+        self.lines, self.sent, self.commands = [], [], []
+        self.stream_ok, self.camera_ok = True, True
+        doctor = self
+
+        class Provider:
+            def request(self, path):
+                doctor.sent.append(path)
+                return {}
+
+            def send(self, body):
+                doctor.sent.append(body)
+                return {'sent': True}
+
+        self.provider = Provider()
+
+    def configure(self, destination='12345678901@g.us', credentials=True):
+        (self.local / 'camera.json').write_text(json.dumps(dict(
+            brand='annke', building='a', host='192.168.1.64', scheme='http', username='admin',
+            password='SECRET', channel=1)))
+        (self.local / 'buildings.json').write_text(json.dumps(dict(buildings=[
+            dict(config('a'), destination=destination)])))
+        if credentials:
+            (self.local / 'whapi.json').write_text('{"token":"fake"}')
+
+    def fake_run(self, command, **options):
+        self.commands.append(command)
+        if not self.stream_ok:
+            return subprocess.CompletedProcess(command, 1, stderr='failed ' + self.PASSWORD_URL)
+        Path(command[-1]).write_bytes(b'video')
+        return subprocess.CompletedProcess(command, 0, stderr='Stream #0:0: Video: hevc (Main), yuv420p, 3840x2160')
+
+    def check(self, settings):
+        if not self.camera_ok:
+            raise CameraError('Camera could not be reached')
+        return ['Signed in to the camera: C800', 'Live picture: usable', 'Detection events: connected.']
+
+    def doctor(self, **options):
+        options.setdefault('ffmpeg', 'ffmpeg')
+        return Doctor(self.local, check_camera=self.check, source=self.PASSWORD_URL, provider=self.provider,
+                      run_command=self.fake_run, disk_free=lambda folder: 50_000_000_000,
+                      log=self.lines.append, **options)
+
+    def output(self):
+        return '\n'.join(self.lines)
+
+    def test_all_good_is_ready_and_sends_nothing(self):
+        self.configure()
+        self.assertTrue(self.doctor().run())
+        self.assertIn('hevc 3840x2160', self.output())
+        self.assertIn('Ready.', self.output())
+        self.assertEqual(self.sent, ['/health'])
+
+    def test_send_test_sends_exactly_one_clip_to_the_group(self):
+        self.configure()
+        self.assertTrue(self.doctor().run(send_test=True))
+        bodies = [item for item in self.sent if isinstance(item, dict)]
+        self.assertEqual(len(bodies), 1)
+        self.assertEqual(bodies[0]['destination'], '12345678901@g.us')
+
+    def test_unreachable_camera_fails_with_advice_and_skips_video(self):
+        self.configure()
+        self.camera_ok = False
+        self.assertFalse(self.doctor().run(send_test=True))
+        self.assertIn('same network', self.output())
+        self.assertIn('SKIP', self.output())
+        self.assertEqual(self.commands, [])
+        self.assertEqual([item for item in self.sent if isinstance(item, dict)], [])
+
+    def test_stream_failure_never_prints_the_password(self):
+        self.configure()
+        self.stream_ok = False
+        self.assertFalse(self.doctor().run())
+        self.assertIn('no video received', self.output())
+        self.assertNotIn('SECRET', self.output())
+
+    def test_missing_setup_is_listed_step_by_step(self):
+        self.assertFalse(self.doctor(ffmpeg='').run())
+        for text in ('brew install ffmpeg', 'camera_setup.py', 'destination', 'whatsapp_setup.py'):
+            self.assertIn(text, self.output())
+
+    def test_bad_group_id_is_a_failure_not_a_crash(self):
+        self.configure()
+        path = self.local / 'buildings.json'
+        path.write_text(path.read_text().replace('12345678901@g.us', '123'))
+        self.assertFalse(self.doctor().run())
+        self.assertIn('Destination must be', self.output())
+
+    def test_missing_whatsapp_group_fails(self):
+        self.configure(destination=None)
+        self.assertFalse(self.doctor().run())
+        self.assertIn('set destination', self.output())
+
+
 @unittest.skipUnless(find_ffmpeg(), 'ffmpeg is not installed')
 class RealVideoTest(unittest.TestCase):
     def test_live_stream_to_whatsapp_request(self):
@@ -597,7 +918,7 @@ class RealVideoTest(unittest.TestCase):
             self.assertIn('yuv420p', details)
             self.assertIn('1280x720', details)
             seconds = re.search(r'Duration: 00:00:(\d+\.\d+)', details)
-            self.assertAlmostEqual(float(seconds.group(1)), 5, delta=1.5)
+            self.assertAlmostEqual(float(seconds.group(1)), 8, delta=1.5)  # 5 requested, starting 1 second in, plus 2 of padding
 
             (root / 'whapi.json').write_text('{"token":"fake"}')
             provider = Whapi(root / 'whapi.json')

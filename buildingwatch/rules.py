@@ -67,7 +67,7 @@ class Rules:
             first_connection = s.get('heartbeat') is None
             s.update(heartbeat=at,disconnected=False,offline_reported=False)
             if recovering or (first_connection and s.get('never_connected_reported')):
-                self.emit(b,'recovery:'+event_id,'camera_recovered',at,'Camera connected; usable frames are being reported.')
+                self.emit(b,'recovery:'+event_id,'camera_recovered',at,'Camera is back online.')
             return
         if kind == 'offline':
             s['disconnected'] = True
@@ -77,7 +77,13 @@ class Rules:
             return
         healthy = self.healthy(b,s,at)
         motion = event.get('detection') == 'motion'
-        if kind in ('entry','exit','activity','suspicious_start'):
+        ai = b.c['ai_review']
+        if ai and kind in ('entry','activity'):
+            # The AI decides what is suspicious, so hours and "first of the day" alerts stay out.
+            if at-s.get('last_review',float('-inf')) >= b.c['review_every_seconds']:
+                s['last_review'] = at
+                self.media(b,'review:'+event_id,'activity_review',at,at-3,at+12,observation_kind=kind)
+        elif kind in ('entry','exit','activity','suspicious_start'):
             day = utc(at).astimezone(b.zone).date().isoformat()
             arrival = 'first_motion' if motion else 'first_arrival'
             wording = ('First entry detected today.' if kind == 'entry' else
@@ -94,7 +100,7 @@ class Rules:
         if kind in ('entry','activity','suspicious_start'):
             s.pop('departure',None)
             s['occupancy'] = 'motion_detected' if motion else 'person_detected'
-        if kind in ('entry','activity') and not b.open_at(utc(at)) and not self.visits.expected(b.id,at):
+        if not ai and kind in ('entry','activity') and not b.open_at(utc(at)) and not self.visits.expected(b.id,at):
             self.suspicious(b,s,at,('Motion' if motion else 'Person activity')+' outside scheduled or approved hours',False)
         if kind == 'suspicious_start':
             self.suspicious(b,s,at,event.get('reason','Explicitly flagged activity'),True)
@@ -106,7 +112,7 @@ class Rules:
     def outage(self, b, s, at):
         if not s.get('offline_reported'):
             self.emit(b,'offline:'+str(s['heartbeat']),'camera_offline',at,
-                      'Previously connected camera is not responding. Occupancy cannot be verified.')
+                      "Camera is offline. We can't see the building right now.")
             s['offline_reported'] = True
         if s.get('departure'):
             s['departure']['verified'] = False
@@ -211,7 +217,7 @@ class Rules:
         if hb is None:
             if at-s['started'] >= b.c['startup_grace_seconds'] and not s.get('never_connected_reported'):
                 self.emit(b,'never-connected:'+str(s['started']),'camera_never_connected',at,
-                          'Camera has not connected since monitoring started. Check initial setup.')
+                          'Camera has not connected yet. Check its power, cable and setup.')
                 s['never_connected_reported'] = True
         elif s.get('disconnected') or at-hb >= b.c['offline_alert_after_seconds']:
             self.outage(b,s,at)
